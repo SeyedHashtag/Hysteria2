@@ -108,7 +108,52 @@ def add_user(message):
     msg = bot.reply_to(message, "Enter username:")
     bot.register_next_step_handler(msg, process_add_user_step1)
 
-# Remaining admin-specific handlers are unchanged
+def process_add_user_step1(message):
+    username = message.text
+    msg = bot.reply_to(message, "Enter configuration details:")
+    bot.register_next_step_handler(msg, process_add_user_step2, username)
+
+def process_add_user_step2(message, username):
+    config = message.text
+    command = f"python3 {CLI_PATH} add-user --username {username} --config {shlex.quote(config)}"
+    result = run_cli_command(command)
+    bot.reply_to(message, f"User added: {result}")
+
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Show User')
+def show_user(message):
+    msg = bot.reply_to(message, "Enter username to view details:")
+    bot.register_next_step_handler(msg, process_show_user)
+
+def process_show_user(message):
+    username = message.text
+    command = f"python3 {CLI_PATH} show-user --username {username}"
+    result = run_cli_command(command)
+    bot.reply_to(message, f"User details:\n{result}")
+
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Delete User')
+def delete_user(message):
+    msg = bot.reply_to(message, "Enter username to delete:")
+    bot.register_next_step_handler(msg, process_delete_user)
+
+def process_delete_user(message):
+    username = message.text
+    command = f"python3 {CLI_PATH} delete-user --username {username}"
+    result = run_cli_command(command)
+    bot.reply_to(message, f"User deleted: {result}")
+
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Server Info')
+def server_info(message):
+    command = f"python3 {CLI_PATH} server-info"
+    result = run_cli_command(command)
+    bot.reply_to(message, f"Server Info:\n{result}")
+
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Backup Server')
+def backup_server(message):
+    if not os.path.exists(BACKUP_DIRECTORY):
+        os.makedirs(BACKUP_DIRECTORY)
+    command = f"python3 {CLI_PATH} backup --output {BACKUP_DIRECTORY}"
+    result = run_cli_command(command)
+    bot.reply_to(message, f"Backup completed: {result}")
 
 if __name__ == '__main__':
     bot.polling(none_stop=True)
