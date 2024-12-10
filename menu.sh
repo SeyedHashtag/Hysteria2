@@ -303,7 +303,7 @@ edit_ips() {
 }
 
 hysteria_upgrade(){
-    bash <(curl https://raw.githubusercontent.com/ReturnFI/Hysteria2/main/upgrade.sh)
+    bash <(curl https://raw.githubusercontent.com/SeyedHashtag/Hysteria2/main/upgrade.sh)
 }
 
 warp_configure_handler() {
