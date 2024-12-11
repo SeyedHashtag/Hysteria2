@@ -40,7 +40,7 @@ def create_main_markup():
 def create_client_markup():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('View My Config', 'View Available Plans')
-    markup.row('Support/Help')
+    markup.row('Downloads', 'Support/Help')
     return markup
 
 def is_admin(user_id):
@@ -393,6 +393,51 @@ def handle_inline_query(query):
             ))
 
     bot.answer_inline_query(query.id, results, cache_time=0)
+
+@bot.message_handler(func=lambda message: message.text == 'Downloads')
+def show_downloads(message):
+    markup = types.InlineKeyboardMarkup()
+    
+    # Android buttons
+    android_play = types.InlineKeyboardButton(
+        "Android (PlayStore)", 
+        url="https://play.google.com/store/apps/details?id=app.hiddify.com&hl=en"
+    )
+    android_github = types.InlineKeyboardButton(
+        "Android (Github)", 
+        url="https://github.com/hiddify/hiddify-next/releases/download/v2.0.5/Hiddify-Android-arm64.apk"
+    )
+    markup.row(android_play)
+    markup.row(android_github)
+    
+    # iOS button
+    ios = types.InlineKeyboardButton(
+        "iOS (AppStore)", 
+        url="https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532"
+    )
+    markup.row(ios)
+    
+    # Windows button
+    windows = types.InlineKeyboardButton(
+        "Windows (Github)", 
+        url="https://github.com/hiddify/hiddify-next/releases/download/v2.0.5/Hiddify-Windows-Setup-x64.exe"
+    )
+    markup.row(windows)
+    
+    # Other platforms button
+    other_platforms = types.InlineKeyboardButton(
+        "Other platforms (Github)", 
+        url="https://github.com/hiddify/hiddify-app/releases/tag/v2.0.5"
+    )
+    markup.row(other_platforms)
+    
+    bot.send_message(
+        message.chat.id,
+        "📶 *Download Hiddify Client*\n\n"
+        "Please select your platform to download the Hiddify client for your VPN connection:",
+        parse_mode="Markdown",
+        reply_markup=markup
+    )
 
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Toggle Diagnose Mode')
 def toggle_diagnose_mode(message):
