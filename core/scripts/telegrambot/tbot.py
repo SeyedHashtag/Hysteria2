@@ -445,13 +445,96 @@ def show_downloads(message):
 
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📢 Broadcast Message')
 def broadcast_message(message):
-    msg = bot.reply_to(message, "Enter the message to broadcast:")
-    bot.register_next_step_handler(msg, process_broadcast_message)
+    markup = types.InlineKeyboardMarkup()
+    all_users = types.InlineKeyboardButton("👥 All Users", callback_data="broadcast:all")
+    active_users = types.InlineKeyboardButton("✅ Active Users", callback_data="broadcast:active")
+    expired_users = types.InlineKeyboardButton("⛔️ Expired Users", callback_data="broadcast:expired")
+    markup.row(all_users)
+    markup.row(active_users)
+    markup.row(expired_users)
+    
+    bot.reply_to(message, "Select users to send message to:", reply_markup=markup)
 
-def process_broadcast_message(message):
-    broadcast_message = message.text
-    for user_id in ADMIN_USER_IDS:
-        bot.send_message(user_id, broadcast_message)
+@bot.callback_query_handler(func=lambda call: call.data.startswith('broadcast:'))
+def handle_broadcast_selection(call):
+    _, user_type = call.data.split(':')
+    msg = bot.send_message(
+        call.message.chat.id,
+        "Enter your message to broadcast (or /cancel):"
+    )
+    bot.register_next_step_handler(msg, process_broadcast_message, user_type)
+
+def process_broadcast_message(message, user_type):
+    if message.text == '/cancel':
+        bot.reply_to(message, "Broadcast cancelled.")
+        return
+        
+    try:
+        # Get list of users
+        command = f"python3 {CLI_PATH} list-users"
+        result = run_cli_command(command)
+        users = json.loads(result)
+        
+        # Load user_data.json to get Telegram IDs
+        user_data = load_user_data()
+        
+        # Initialize counters
+        sent_count = 0
+        failed_count = 0
+        total_users = 0
+        
+        # Process each user
+        for username, details in users.items():
+            # Filter based on user type
+            if user_type == 'active' and details.get('blocked', False):
+                continue
+            if user_type == 'expired' and not details.get('blocked', False):
+                continue
+                
+            # Find Telegram ID for this username
+            telegram_id = None
+            for tid, configs in user_data.items():
+                if isinstance(configs, list):
+                    for config in configs:
+                        if config.get('username') == username:
+                            telegram_id = int(tid)
+                            break
+                    if telegram_id:
+                        break
+            
+            if not telegram_id:
+                failed_count += 1
+                continue
+                
+            total_users += 1
+            
+            try:
+                bot.send_message(telegram_id, message.text, parse_mode="Markdown")
+                sent_count += 1
+                
+                # Show progress every 5 messages
+                if sent_count % 5 == 0:
+                    bot.reply_to(
+                        message,
+                        f"Progress: {sent_count}/{total_users} messages sent..."
+                    )
+                    
+            except Exception as e:
+                failed_count += 1
+                continue
+        
+        # Send final report
+        report = (
+            "📢 *Broadcast Complete*\n\n"
+            f"✅ Successfully sent: {sent_count}\n"
+            f"❌ Failed to send: {failed_count}\n"
+            f"👥 Total targeted users: {total_users}\n"
+            f"🎯 Selected group: {user_type}"
+        )
+        bot.reply_to(message, report, parse_mode="Markdown")
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error during broadcast: {str(e)}")
 
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📝 Edit Help')
 def edit_help_message(message):
