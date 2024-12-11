@@ -436,54 +436,84 @@ def view_my_config(message):
             bot.reply_to(message, "Failed to generate temporary config.")
         return
 
-    if user_id not in user_data or not user_data[user_id].get('username'):
+    if user_id not in user_data:
         bot.reply_to(message, "You don't have any active configuration. Please purchase a plan first.")
         return
 
-    # Use existing show_user function's logic
-    username = user_data[user_id]['username']
-    command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 4"
-    result = run_cli_command(command)
-    
-    if "Error" in result:
-        bot.reply_to(message, "Failed to retrieve your configuration. Please contact support.")
+    # Get all configs for the user
+    user_configs = user_data[user_id]
+    if not isinstance(user_configs, list):
+        # Convert old format to new format if necessary
+        user_configs = [user_configs]
+        user_data[user_id] = user_configs
+        save_user_data(user_data)
+
+    active_configs = []
+    for config in user_configs:
+        username = config.get('username')
+        if not username:
+            continue
+
+        # Check if config is blocked
+        details_command = f"python3 {CLI_PATH} get-user -u {username}"
+        details_result = run_cli_command(details_command)
+        try:
+            user_details = json.loads(details_result)
+            if user_details.get('blocked', False):
+                continue  # Skip blocked configs
+        except json.JSONDecodeError:
+            continue
+
+        # Get config URI
+        uri_command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 4"
+        uri_result = run_cli_command(uri_command)
+        
+        if "Error" not in uri_result:
+            qr_result = uri_result.replace("IPv4:\n", "").strip()
+            
+            try:
+                traffic_limit = user_details.get('max_download_bytes', 0) / (1024 ** 3)
+                used_traffic = (user_details.get('upload_bytes', 0) + user_details.get('download_bytes', 0)) / (1024 ** 3)
+                expiration_days = user_details.get('expiration_days', 0)
+                
+                config_info = {
+                    'username': username,
+                    'uri': qr_result,
+                    'plan': config.get('plan', 'Unknown'),
+                    'traffic_limit': traffic_limit,
+                    'used_traffic': used_traffic,
+                    'expiration_days': expiration_days,
+                    'purchase_date': config.get('purchase_date', 'Unknown')
+                }
+                active_configs.append(config_info)
+            except:
+                continue
+
+    if not active_configs:
+        bot.reply_to(message, "You don't have any active configurations.")
         return
 
-    qr_result = result.replace("IPv4:\n", "").strip()
-    qr = qrcode.make(qr_result)
-    bio = io.BytesIO()
-    qr.save(bio, 'PNG')
-    bio.seek(0)
-
-    # Get user details using existing function logic
-    details_command = f"python3 {CLI_PATH} get-user -u {username}"
-    details_result = run_cli_command(details_command)
-    
-    try:
-        user_details = json.loads(details_result)
-        traffic_limit = user_details.get('max_download_bytes', 0) / (1024 ** 3)
-        used_traffic = (user_details.get('upload_bytes', 0) + user_details.get('download_bytes', 0)) / (1024 ** 3)
-        expiration_days = user_details.get('expiration_days', 0)
+    # Send each active config
+    for config in active_configs:
+        qr = qrcode.make(config['uri'])
+        bio = io.BytesIO()
+        qr.save(bio, 'PNG')
+        bio.seek(0)
         
         caption = (
-            f"**Your Configuration**\n\n"
-            f"Username: {username}\n"
-            f"Traffic Usage: {used_traffic:.2f}GB / {traffic_limit:.2f}GB\n"
-            f"Days Remaining: {expiration_days}\n\n"
-            f"**Connection URI:**\n`{qr_result}`"
+            f"**Configuration Details**\n\n"
+            f"Plan: {config['plan'].title()}\n"
+            f"Username: {config['username']}\n"
+            f"Traffic Usage: {config['used_traffic']:.2f}GB / {config['traffic_limit']:.2f}GB\n"
+            f"Days Remaining: {config['expiration_days']}\n"
+            f"Purchase Date: {config['purchase_date']}\n\n"
+            f"**Connection URI:**\n`{config['uri']}`"
         )
         
         bot.send_photo(
             message.chat.id,
             bio,
             caption=caption,
-            parse_mode="Markdown"
-        )
-    except json.JSONDecodeError:
-        bot.send_photo(
-            message.chat.id,
-            bio,
-            caption=f"**Your Configuration**\n\n`{qr_result}`",
             parse_mode="Markdown"
         )
 
@@ -535,13 +565,21 @@ def handle_purchase(call):
 
     # Save user data
     user_data = load_user_data()
-    user_data[user_id] = {
+    new_config = {
         'username': test_username,
         'plan': plan_type,
         'purchase_date': time.strftime('%Y-%m-%d %H:%M:%S'),
         'gb': gb,
         'days': 30
     }
+
+    if user_id not in user_data:
+        user_data[user_id] = []
+    elif not isinstance(user_data[user_id], list):
+        # Convert old format to new format
+        user_data[user_id] = [user_data[user_id]]
+    
+    user_data[user_id].append(new_config)
     save_user_data(user_data)
 
     # Get the configuration URI and generate QR code
@@ -579,27 +617,40 @@ def generate_stats(user_data, start_time, end_time=None, diagnose_only=False):
     plan_counts = {'basic': 0, 'premium': 0, 'ultimate': 0}
     plan_prices = {'basic': 1.8, 'premium': 3, 'ultimate': 4.2}
 
-    for user_info in user_data.values():
-        purchase_time = time.strptime(user_info.get('purchase_date', ''), '%Y-%m-%d %H:%M:%S')
-        purchase_timestamp = time.mktime(purchase_time)
-        
-        # Skip if outside time range
-        if purchase_timestamp < start_time:
-            continue
-        if end_time and purchase_timestamp > end_time:
-            continue
+    for user_configs in user_data.values():
+        if not isinstance(user_configs, list):
+            user_configs = [user_configs]
 
-        # Skip based on diagnose mode
-        is_test = 'test_' in user_info.get('username', '')
-        if diagnose_only and not is_test:
-            continue
-        if not diagnose_only and is_test:
-            continue
+        for config in user_configs:
+            username = config.get('username', '')
+            purchase_date = config.get('purchase_date', '')
+            
+            if not purchase_date:
+                continue
 
-        plan_type = user_info.get('plan', 'basic')
-        plan_counts[plan_type] += 1
-        total_profit += plan_prices[plan_type]
-        total_configs += 1
+            try:
+                purchase_time = time.strptime(purchase_date, '%Y-%m-%d %H:%M:%S')
+                purchase_timestamp = time.mktime(purchase_time)
+            except ValueError:
+                continue
+            
+            # Skip if outside time range
+            if purchase_timestamp < start_time:
+                continue
+            if end_time and purchase_timestamp > end_time:
+                continue
+
+            # Check if it's a test config
+            is_test = username.startswith('test')
+            if diagnose_only and not is_test:
+                continue
+            if not diagnose_only and is_test:
+                continue
+
+            plan_type = config.get('plan', 'basic')
+            plan_counts[plan_type] += 1
+            total_profit += plan_prices[plan_type]
+            total_configs += 1
 
     return total_configs, total_profit, plan_counts
 
