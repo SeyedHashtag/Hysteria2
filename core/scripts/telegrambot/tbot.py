@@ -15,11 +15,27 @@ from collections import defaultdict
 import threading
 import schedule
 
+# Setup Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
 load_dotenv()
 
 # Bot Configuration
 API_TOKEN = os.getenv('API_TOKEN')
-ADMIN_USER_IDS = json.loads(os.getenv('ADMIN_USER_IDS'))
+ADMIN_USER_IDS = json.loads(os.getenv('ADMIN_USER_IDS', '[]'))
+
+logging.info(f"API Token: {'Present' if API_TOKEN else 'Missing'}")
+logging.info(f"Admin IDs: {ADMIN_USER_IDS}")
+
+if not API_TOKEN:
+    raise ValueError("API_TOKEN not found in environment variables")
+
+if not ADMIN_USER_IDS:
+    raise ValueError("ADMIN_USER_IDS not found or invalid in environment variables")
+
 CLI_PATH = '/etc/hysteria/core/cli.py'
 BACKUP_DIRECTORY = '/opt/hysbackup'
 USER_DATA_FILE = '/etc/hysteria/user_data.json'
@@ -46,13 +62,6 @@ CONFIG_TEMPLATES = {
     'ultimate': {'traffic': 100, 'days': 30, 'name': 'Ultimate Plan'}
 }
 
-# Setup Logging
-logging.basicConfig(
-    filename=os.path.join(LOG_DIRECTORY, f'bot_{datetime.now().strftime("%Y%m")}.log'),
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-
 # Rate Limiting
 class RateLimit:
     def __init__(self, max_requests=5, window_seconds=60):
@@ -72,8 +81,13 @@ class RateLimit:
 # Initialize rate limiter
 rate_limiter = RateLimit()
 
-# Initialize bot
-bot = telebot.TeleBot(API_TOKEN)
+# Initialize bot with exception handling
+try:
+    bot = telebot.TeleBot(API_TOKEN)
+    logging.info("Bot initialized successfully")
+except Exception as e:
+    logging.error(f"Failed to initialize bot: {e}")
+    raise
 
 # Analytics Functions
 def save_analytics(data):
@@ -171,19 +185,58 @@ def create_client_markup():
     markup.row('⬇️ Downloads', '❓ Support/Help')
     return markup
 
-# Command handlers
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    track_command(message.from_user.id, 'start')
-    if is_admin(message.from_user.id):
-        markup = create_main_markup()
-        bot.reply_to(message, "Welcome Admin! Choose an option:", reply_markup=markup)
-    else:
-        markup = create_client_markup()
-        help_text = load_help_message() or DEFAULT_HELP_MESSAGE
-        bot.reply_to(message, help_text, reply_markup=markup, parse_mode="Markdown")
+    try:
+        logging.info(f"Welcome message for user {message.from_user.id}")
+        track_command(message.from_user.id, 'start')
+        if is_admin(message.from_user.id):
+            markup = create_main_markup()
+            bot.reply_to(message, "Welcome Admin! Choose an option:", reply_markup=markup)
+        else:
+            markup = create_client_markup()
+            help_text = load_help_message() or DEFAULT_HELP_MESSAGE
+            bot.reply_to(message, help_text, reply_markup=markup, parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Error in welcome handler: {e}")
+        bot.reply_to(message, "An error occurred. Please try again.")
 
-# Admin menu handlers
+@bot.message_handler(func=lambda message: message.text == '👤 View My Config')
+def handle_view_config(message):
+    try:
+        logging.info(f"View config request from {message.from_user.id}")
+        view_my_config(message)
+    except Exception as e:
+        logging.error(f"Error in view config: {e}")
+        bot.reply_to(message, "An error occurred. Please try again.")
+
+@bot.message_handler(func=lambda message: message.text == '💰 View Available Plans')
+def handle_view_plans(message):
+    try:
+        logging.info(f"View plans request from {message.from_user.id}")
+        view_available_plans(message)
+    except Exception as e:
+        logging.error(f"Error in view plans: {e}")
+        bot.reply_to(message, "An error occurred. Please try again.")
+
+@bot.message_handler(func=lambda message: message.text == '📥 Downloads')
+def handle_downloads(message):
+    try:
+        logging.info(f"Downloads request from {message.from_user.id}")
+        show_downloads(message)
+    except Exception as e:
+        logging.error(f"Error in downloads: {e}")
+        bot.reply_to(message, "An error occurred. Please try again.")
+
+@bot.message_handler(func=lambda message: message.text == '❓ Support/Help')
+def handle_support(message):
+    try:
+        logging.info(f"Support request from {message.from_user.id}")
+        support_help(message)
+    except Exception as e:
+        logging.error(f"Error in support: {e}")
+        bot.reply_to(message, "An error occurred. Please try again.")
+
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text in [
     '➕ Add User', '👥 Show User', '❌ Delete User', '📊 Server Info',
     '💾 Backup Server', '📈 Sales Stats', '📊 User Stats', '🔔 Notifications',
@@ -191,65 +244,78 @@ def send_welcome(message):
     '🔍 Toggle Diagnose Mode', '📋 Templates'
 ])
 def handle_admin_menu(message):
-    track_command(message.from_user.id, message.text)
-    if message.text == '➕ Add User':
-        add_user(message)
-    elif message.text == '👥 Show User':
-        show_user(message)
-    elif message.text == '❌ Delete User':
-        delete_user(message)
-    elif message.text == '📊 Server Info':
-        server_info(message)
-    elif message.text == '💾 Backup Server':
-        backup_server(message)
-    elif message.text == '📈 Sales Stats':
-        show_sales_stats(message)
-    elif message.text == '📊 User Stats':
-        show_user_stats(message)
-    elif message.text == '🔄 Update All Users':
-        update_all_users(message)
-    elif message.text == '📝 Edit Help Message':
-        edit_help_message(message)
-    elif message.text == '📢 Broadcast Message':
-        broadcast_message(message)
-    elif message.text == '🔍 Toggle Diagnose Mode':
-        toggle_diagnose_mode(message)
-    elif message.text == '📋 Templates':
-        show_templates(message)
+    try:
+        logging.info(f"Admin menu request: {message.text} from {message.from_user.id}")
+        track_command(message.from_user.id, message.text)
+        
+        admin_functions = {
+            '➕ Add User': add_user,
+            '👥 Show User': show_user,
+            '❌ Delete User': delete_user,
+            '📊 Server Info': server_info,
+            '💾 Backup Server': backup_server,
+            '📈 Sales Stats': show_sales_stats,
+            '📊 User Stats': show_user_stats,
+            '🔄 Update All Users': update_all_users,
+            '📝 Edit Help Message': edit_help_message,
+            '📢 Broadcast Message': broadcast_message,
+            '🔍 Toggle Diagnose Mode': toggle_diagnose_mode,
+            '📋 Templates': show_templates
+        }
+        
+        if message.text in admin_functions:
+            admin_functions[message.text](message)
+        else:
+            bot.reply_to(message, "Invalid admin command")
+            
+    except Exception as e:
+        logging.error(f"Error in admin menu handler: {e}")
+        bot.reply_to(message, "An error occurred. Please try again.")
 
-# Client menu handlers
-@bot.message_handler(func=lambda message: not is_admin(message.from_user.id) and message.text in [
-    '👤 View My Config', '💰 View Available Plans', '📥 Downloads',
-    '❓ Support/Help'
-])
-def handle_client_menu(message):
-    track_command(message.from_user.id, message.text)
-    if message.text == '👤 View My Config':
-        view_my_config(message)
-    elif message.text == '💰 View Available Plans':
-        view_available_plans(message)
-    elif message.text == '📥 Downloads':
-        show_downloads(message)
-    elif message.text == '❓ Support/Help':
-        support_help(message)
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback_query(call):
+    try:
+        logging.info(f"Callback query: {call.data} from {call.from_user.id}")
+        
+        if call.data.startswith('edit_') or call.data.startswith('renew_') or call.data.startswith('block_') or call.data.startswith('reset_') or call.data.startswith('ipv6_'):
+            handle_edit_callback(call)
+        elif call.data.startswith('confirm_block:'):
+            handle_block_confirmation(call)
+        elif call.data.startswith('broadcast:'):
+            handle_broadcast_selection(call)
+        elif call.data.startswith('update_all:'):
+            handle_update_all(call)
+        elif call.data.startswith('purchase_plan:'):
+            handle_purchase(call)
+        elif call.data.startswith('template_'):
+            handle_template_selection(call)
+        else:
+            bot.answer_callback_query(call.id, "Invalid callback query")
+            
+    except Exception as e:
+        logging.error(f"Error in callback handler: {e}")
+        bot.answer_callback_query(call.id, "An error occurred")
 
-# Feedback command handler
 @bot.message_handler(commands=['feedback'])
-def handle_feedback_command(message):
-    collect_feedback(message)
+def handle_feedback(message):
+    try:
+        logging.info(f"Feedback command from {message.from_user.id}")
+        collect_feedback(message)
+    except Exception as e:
+        logging.error(f"Error in feedback handler: {e}")
+        bot.reply_to(message, "An error occurred. Please try again.")
 
-# Inline query handler
-@bot.inline_handler(lambda query: True)
-def handle_inline(query):
-    handle_inline_query(query)
-
-# Error handler
 @bot.message_handler(func=lambda message: True)
-def handle_unknown(message):
-    if is_admin(message.from_user.id):
-        bot.reply_to(message, "⚠️ Unknown command. Please use the menu buttons.")
-    else:
-        bot.reply_to(message, "⚠️ Unknown command. Please use the menu or type /help for assistance.")
+def handle_all_messages(message):
+    try:
+        logging.info(f"Unknown message: {message.text} from {message.from_user.id}")
+        if is_admin(message.from_user.id):
+            bot.reply_to(message, "Unknown command. Please use the menu buttons.")
+        else:
+            bot.reply_to(message, "Unknown command. Please use the menu or type /help")
+    except Exception as e:
+        logging.error(f"Error in fallback handler: {e}")
+        bot.reply_to(message, "An error occurred. Please try again.")
 
 def add_user(message):
     msg = bot.reply_to(message, "Enter username:")
@@ -310,7 +376,7 @@ def process_add_user_step3(message, username, traffic_limit):
         qr_v4.save(bio_v4, 'PNG')
         bio_v4.seek(0)
         caption = f"{result}\n\n`{qr_result}`"
-        bot.send_photo(message.chat.id, photo=bio_v4, caption=caption, parse_mode="Markdown")
+        bot.send_photo(message.chat.id, bio_v4, caption=caption, parse_mode="Markdown")
 
     except ValueError:
         bot.reply_to(message, "Invalid expiration days. Please enter a number.")
@@ -1270,5 +1336,16 @@ def create_user_from_template(message, template):
         log_error(e, f"create_user_from_template: {username}")
         bot.reply_to(message, "❌ Error creating user. Please try again.")
 
+def main():
+    logging.info("Starting bot...")
+    while True:
+        try:
+            logging.info("Bot polling started")
+            bot.polling(none_stop=True, interval=1, timeout=60)
+        except Exception as e:
+            logging.error(f"Error in main polling loop: {e}")
+            time.sleep(10)
+            continue
+
 if __name__ == '__main__':
-    bot.polling(none_stop=True)
+    main()
