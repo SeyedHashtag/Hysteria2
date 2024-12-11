@@ -16,7 +16,7 @@ API_TOKEN = os.getenv('API_TOKEN')
 ADMIN_USER_IDS = json.loads(os.getenv('ADMIN_USER_IDS'))
 CLI_PATH = '/etc/hysteria/core/cli.py'
 BACKUP_DIRECTORY = '/opt/hysbackup'
-USER_DATA_FILE = 'user_data.json'
+USER_DATA_FILE = '/etc/hysteria/user_data.json'  # Changed to server directory
 diagnose_mode = False
 
 bot = telebot.TeleBot(API_TOKEN)
@@ -402,14 +402,22 @@ def toggle_diagnose_mode(message):
     bot.reply_to(message, f"Diagnose mode is now {status}.")
 
 def load_user_data():
-    if os.path.exists(USER_DATA_FILE):
-        with open(USER_DATA_FILE, 'r') as f:
-            return json.load(f)
-    return {}
+    try:
+        if os.path.exists(USER_DATA_FILE):
+            with open(USER_DATA_FILE, 'r') as f:
+                return json.load(f)
+        return {}
+    except Exception as e:
+        print(f"Error loading user data: {str(e)}")
+        return {}
 
 def save_user_data(data):
-    with open(USER_DATA_FILE, 'w') as f:
-        json.dump(data, f, indent=4)
+    try:
+        os.makedirs(os.path.dirname(USER_DATA_FILE), exist_ok=True)
+        with open(USER_DATA_FILE, 'w') as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"Error saving user data: {str(e)}")
 
 @bot.message_handler(func=lambda message: message.text == 'View My Config')
 def view_my_config(message):
@@ -417,11 +425,12 @@ def view_my_config(message):
     user_data = load_user_data()
 
     if diagnose_mode:
-        # Use existing show_user function's logic for temporary access
-        command = f"python3 {CLI_PATH} show-user-uri -u temp_user_{user_id} -ip 4"
+        command = f"python3 {CLI_PATH} show-user-uri -u temp_user_{user_id} -ip 4 -s"
         result = run_cli_command(command)
         if "Error" not in result:
             qr_result = result.replace("IPv4:\n", "").strip()
+            if "Warning: IP4 or IP6" in qr_result:
+                qr_result = qr_result.split('\n')[-1].strip()
             qr = qrcode.make(qr_result)
             bio = io.BytesIO()
             qr.save(bio, 'PNG')
@@ -440,10 +449,8 @@ def view_my_config(message):
         bot.reply_to(message, "You don't have any active configuration. Please purchase a plan first.")
         return
 
-    # Get all configs for the user
     user_configs = user_data[user_id]
     if not isinstance(user_configs, list):
-        # Convert old format to new format if necessary
         user_configs = [user_configs]
         user_data[user_id] = user_configs
         save_user_data(user_data)
@@ -454,68 +461,80 @@ def view_my_config(message):
         if not username:
             continue
 
-        # Check if config is blocked
         details_command = f"python3 {CLI_PATH} get-user -u {username}"
         details_result = run_cli_command(details_command)
+        
         try:
             user_details = json.loads(details_result)
             if user_details.get('blocked', False):
-                continue  # Skip blocked configs
+                continue
         except json.JSONDecodeError:
+            print(f"Failed to parse user details for {username}: {details_result}")
+            continue
+        except Exception as e:
+            print(f"Error checking user {username}: {str(e)}")
             continue
 
-        # Get config URI
-        uri_command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 4"
+        uri_command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 4 -s"
         uri_result = run_cli_command(uri_command)
         
-        if "Error" not in uri_result:
-            qr_result = uri_result.replace("IPv4:\n", "").strip()
+        if "Error" in uri_result:
+            print(f"Error getting URI for {username}: {uri_result}")
+            continue
+
+        qr_result = uri_result.replace("IPv4:\n", "").strip()
+        if "Warning: IP4 or IP6" in qr_result:
+            qr_result = qr_result.split('\n')[-1].strip()
+        
+        try:
+            traffic_limit = user_details.get('max_download_bytes', 0) / (1024 ** 3)
+            used_traffic = (user_details.get('upload_bytes', 0) + user_details.get('download_bytes', 0)) / (1024 ** 3)
+            expiration_days = user_details.get('expiration_days', 0)
             
-            try:
-                traffic_limit = user_details.get('max_download_bytes', 0) / (1024 ** 3)
-                used_traffic = (user_details.get('upload_bytes', 0) + user_details.get('download_bytes', 0)) / (1024 ** 3)
-                expiration_days = user_details.get('expiration_days', 0)
-                
-                config_info = {
-                    'username': username,
-                    'uri': qr_result,
-                    'plan': config.get('plan', 'Unknown'),
-                    'traffic_limit': traffic_limit,
-                    'used_traffic': used_traffic,
-                    'expiration_days': expiration_days,
-                    'purchase_date': config.get('purchase_date', 'Unknown')
-                }
-                active_configs.append(config_info)
-            except:
-                continue
+            config_info = {
+                'username': username,
+                'uri': qr_result,
+                'plan': config.get('plan', 'Unknown'),
+                'traffic_limit': traffic_limit,
+                'used_traffic': used_traffic,
+                'expiration_days': expiration_days,
+                'purchase_date': config.get('purchase_date', 'Unknown')
+            }
+            active_configs.append(config_info)
+        except Exception as e:
+            print(f"Error processing config for {username}: {str(e)}")
+            continue
 
     if not active_configs:
         bot.reply_to(message, "You don't have any active configurations.")
         return
 
-    # Send each active config
     for config in active_configs:
-        qr = qrcode.make(config['uri'])
-        bio = io.BytesIO()
-        qr.save(bio, 'PNG')
-        bio.seek(0)
-        
-        caption = (
-            f"**Configuration Details**\n\n"
-            f"Plan: {config['plan'].title()}\n"
-            f"Username: {config['username']}\n"
-            f"Traffic Usage: {config['used_traffic']:.2f}GB / {config['traffic_limit']:.2f}GB\n"
-            f"Days Remaining: {config['expiration_days']}\n"
-            f"Purchase Date: {config['purchase_date']}\n\n"
-            f"**Connection URI:**\n`{config['uri']}`"
-        )
-        
-        bot.send_photo(
-            message.chat.id,
-            bio,
-            caption=caption,
-            parse_mode="Markdown"
-        )
+        try:
+            qr = qrcode.make(config['uri'])
+            bio = io.BytesIO()
+            qr.save(bio, 'PNG')
+            bio.seek(0)
+            
+            caption = (
+                f"**Configuration Details**\n\n"
+                f"Plan: {config['plan'].title()}\n"
+                f"Username: {config['username']}\n"
+                f"Traffic Usage: {config['used_traffic']:.2f}GB / {config['traffic_limit']:.2f}GB\n"
+                f"Days Remaining: {config['expiration_days']}\n"
+                f"Purchase Date: {config['purchase_date']}\n\n"
+                f"**Connection URI:**\n`{config['uri']}`"
+            )
+            
+            bot.send_photo(
+                message.chat.id,
+                bio,
+                caption=caption,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            print(f"Error sending config {config['username']}: {str(e)}")
+            continue
 
 @bot.message_handler(func=lambda message: message.text == 'View Available Plans')
 def view_available_plans(message):
@@ -550,11 +569,9 @@ def handle_purchase(call):
     user_id = str(call.from_user.id)
     gb = int(gb)
     
-    # Generate a unique username with only letters and numbers
     timestamp = str(int(time.time()))[-6:]  # Last 6 digits of timestamp
     test_username = f"test{user_id[-4:]}{timestamp}"  # Using last 4 digits of user_id
     
-    # Use existing add-user command with the specified traffic limit
     command = f"python3 {CLI_PATH} add-user -u {test_username} -t {gb} -e 30"
     result = run_cli_command(command)
     
@@ -563,31 +580,31 @@ def handle_purchase(call):
         bot.reply_to(call.message, f"Error creating test configuration: {result}")
         return
 
-    # Save user data
-    user_data = load_user_data()
-    new_config = {
-        'username': test_username,
-        'plan': plan_type,
-        'purchase_date': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'gb': gb,
-        'days': 30
-    }
-
-    if user_id not in user_data:
-        user_data[user_id] = []
-    elif not isinstance(user_data[user_id], list):
-        # Convert old format to new format
-        user_data[user_id] = [user_data[user_id]]
-    
-    user_data[user_id].append(new_config)
-    save_user_data(user_data)
-
-    # Get the configuration URI and generate QR code
-    uri_command = f"python3 {CLI_PATH} show-user-uri -u {test_username} -ip 4"
+    uri_command = f"python3 {CLI_PATH} show-user-uri -u {test_username} -ip 4 -s"
     uri_result = run_cli_command(uri_command)
     
     if "Error" not in uri_result:
         qr_result = uri_result.replace("IPv4:\n", "").strip()
+        if "Warning: IP4 or IP6" in qr_result:
+            qr_result = qr_result.split('\n')[-1].strip()
+        
+        user_data = load_user_data()
+        new_config = {
+            'username': test_username,
+            'plan': plan_type,
+            'purchase_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'gb': gb,
+            'days': 30
+        }
+
+        if user_id not in user_data:
+            user_data[user_id] = []
+        elif not isinstance(user_data[user_id], list):
+            user_data[user_id] = [user_data[user_id]]
+        
+        user_data[user_id].append(new_config)
+        save_user_data(user_data)
+
         qr = qrcode.make(qr_result)
         bio = io.BytesIO()
         qr.save(bio, 'PNG')
@@ -634,13 +651,11 @@ def generate_stats(user_data, start_time, end_time=None, diagnose_only=False):
             except ValueError:
                 continue
             
-            # Skip if outside time range
             if purchase_timestamp < start_time:
                 continue
             if end_time and purchase_timestamp > end_time:
                 continue
 
-            # Check if it's a test config
             is_test = username.startswith('test')
             if diagnose_only and not is_test:
                 continue
@@ -659,15 +674,12 @@ def show_sales_stats(message):
     user_data = load_user_data()
     current_time = time.time()
     
-    # Calculate start times
     day_start = current_time - (24 * 60 * 60)  # 24 hours ago
     week_start = current_time - (7 * 24 * 60 * 60)  # 7 days ago
 
-    # Get regular sales stats
     day_configs, day_profit, day_plans = generate_stats(user_data, day_start)
     week_configs, week_profit, week_plans = generate_stats(user_data, week_start)
 
-    # Get diagnose mode stats
     day_test_configs, day_test_profit, day_test_plans = generate_stats(user_data, day_start, diagnose_only=True)
     week_test_configs, week_test_profit, week_test_plans = generate_stats(user_data, week_start, diagnose_only=True)
 
