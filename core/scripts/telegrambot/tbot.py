@@ -33,7 +33,7 @@ def create_main_markup():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('Add User', 'Show User')
     markup.row('Delete User', 'Server Info')
-    markup.row('Backup Server')
+    markup.row('Backup Server', 'Sales Stats')
     markup.row('Toggle Diagnose Mode')
     return markup
 
@@ -520,8 +520,9 @@ def handle_purchase(call):
     user_id = str(call.from_user.id)
     gb = int(gb)
     
-    # Generate a unique username for the test user
-    test_username = f"test_user_{user_id}_{int(time.time())}"
+    # Generate a unique username with only letters and numbers
+    timestamp = str(int(time.time()))[-6:]  # Last 6 digits of timestamp
+    test_username = f"test{user_id[-4:]}{timestamp}"  # Using last 4 digits of user_id
     
     # Use existing add-user command with the specified traffic limit
     command = f"python3 {CLI_PATH} add-user -u {test_username} -t {gb} -e 30"
@@ -571,6 +572,85 @@ def handle_purchase(call):
         )
     else:
         bot.reply_to(call.message, "Failed to generate configuration URI. Please contact support.")
+
+def generate_stats(user_data, start_time, end_time=None, diagnose_only=False):
+    total_profit = 0
+    total_configs = 0
+    plan_counts = {'basic': 0, 'premium': 0, 'ultimate': 0}
+    plan_prices = {'basic': 1.8, 'premium': 3, 'ultimate': 4.2}
+
+    for user_info in user_data.values():
+        purchase_time = time.strptime(user_info.get('purchase_date', ''), '%Y-%m-%d %H:%M:%S')
+        purchase_timestamp = time.mktime(purchase_time)
+        
+        # Skip if outside time range
+        if purchase_timestamp < start_time:
+            continue
+        if end_time and purchase_timestamp > end_time:
+            continue
+
+        # Skip based on diagnose mode
+        is_test = 'test_' in user_info.get('username', '')
+        if diagnose_only and not is_test:
+            continue
+        if not diagnose_only and is_test:
+            continue
+
+        plan_type = user_info.get('plan', 'basic')
+        plan_counts[plan_type] += 1
+        total_profit += plan_prices[plan_type]
+        total_configs += 1
+
+    return total_configs, total_profit, plan_counts
+
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Sales Stats')
+def show_sales_stats(message):
+    user_data = load_user_data()
+    current_time = time.time()
+    
+    # Calculate start times
+    day_start = current_time - (24 * 60 * 60)  # 24 hours ago
+    week_start = current_time - (7 * 24 * 60 * 60)  # 7 days ago
+
+    # Get regular sales stats
+    day_configs, day_profit, day_plans = generate_stats(user_data, day_start)
+    week_configs, week_profit, week_plans = generate_stats(user_data, week_start)
+
+    # Get diagnose mode stats
+    day_test_configs, day_test_profit, day_test_plans = generate_stats(user_data, day_start, diagnose_only=True)
+    week_test_configs, week_test_profit, week_test_plans = generate_stats(user_data, week_start, diagnose_only=True)
+
+    stats_message = (
+        "📊 **Sales Statistics**\n\n"
+        "**Today's Sales:**\n"
+        f"Total Configs: {day_configs}\n"
+        f"Total Profit: ${day_profit:.2f}\n"
+        f"Basic Plans: {day_plans['basic']}\n"
+        f"Premium Plans: {day_plans['premium']}\n"
+        f"Ultimate Plans: {day_plans['ultimate']}\n\n"
+        
+        "**Weekly Sales:**\n"
+        f"Total Configs: {week_configs}\n"
+        f"Total Profit: ${week_profit:.2f}\n"
+        f"Basic Plans: {week_plans['basic']}\n"
+        f"Premium Plans: {week_plans['premium']}\n"
+        f"Ultimate Plans: {week_plans['ultimate']}\n\n"
+        
+        "🧪 **Diagnose Mode Stats**\n\n"
+        "**Today's Test Configs:**\n"
+        f"Total Test Configs: {day_test_configs}\n"
+        f"Basic Plans: {day_test_plans['basic']}\n"
+        f"Premium Plans: {day_test_plans['premium']}\n"
+        f"Ultimate Plans: {day_test_plans['ultimate']}\n\n"
+        
+        "**Weekly Test Configs:**\n"
+        f"Total Test Configs: {week_test_configs}\n"
+        f"Basic Plans: {week_test_plans['basic']}\n"
+        f"Premium Plans: {week_test_plans['premium']}\n"
+        f"Ultimate Plans: {week_test_plans['ultimate']}"
+    )
+
+    bot.reply_to(message, stats_message, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == 'Support/Help')
 def support_help(message):
