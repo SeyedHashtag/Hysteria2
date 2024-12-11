@@ -424,27 +424,6 @@ def view_my_config(message):
     user_id = str(message.from_user.id)
     user_data = load_user_data()
 
-    if diagnose_mode:
-        command = f"python3 {CLI_PATH} show-user-uri -u temp_user_{user_id} -ip 4 -s"
-        result = run_cli_command(command)
-        if "Error" not in result:
-            qr_result = result.replace("IPv4:\n", "").strip()
-            if "Warning: IP4 or IP6" in qr_result:
-                qr_result = qr_result.split('\n')[-1].strip()
-            qr = qrcode.make(qr_result)
-            bio = io.BytesIO()
-            qr.save(bio, 'PNG')
-            bio.seek(0)
-            bot.send_photo(
-                message.chat.id,
-                bio,
-                caption=f"**Temporary Config (Diagnose Mode)**\n\n`{qr_result}`",
-                parse_mode="Markdown"
-            )
-        else:
-            bot.reply_to(message, "Failed to generate temporary config.")
-        return
-
     if user_id not in user_data:
         bot.reply_to(message, "You don't have any active configuration. Please purchase a plan first.")
         return
@@ -455,19 +434,23 @@ def view_my_config(message):
         user_data[user_id] = user_configs
         save_user_data(user_data)
 
-    active_configs = []
+    # Send a processing message
+    bot.reply_to(message, "Fetching your configurations, please wait...")
+
+    # Process each config one by one
     for config in user_configs:
         username = config.get('username')
         if not username:
             continue
 
+        # Check if config exists and is not blocked
         details_command = f"python3 {CLI_PATH} get-user -u {username}"
         details_result = run_cli_command(details_command)
         
         try:
             user_details = json.loads(details_result)
             if user_details.get('blocked', False):
-                continue
+                continue  # Skip blocked configs
         except json.JSONDecodeError:
             print(f"Failed to parse user details for {username}: {details_result}")
             continue
@@ -475,6 +458,7 @@ def view_my_config(message):
             print(f"Error checking user {username}: {str(e)}")
             continue
 
+        # Get config URI
         uri_command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 4 -s"
         uri_result = run_cli_command(uri_command)
         
@@ -487,53 +471,41 @@ def view_my_config(message):
             qr_result = qr_result.split('\n')[-1].strip()
         
         try:
+            qr = qrcode.make(qr_result)
+            bio = io.BytesIO()
+            qr.save(bio, 'PNG')
+            bio.seek(0)
+
             traffic_limit = user_details.get('max_download_bytes', 0) / (1024 ** 3)
             used_traffic = (user_details.get('upload_bytes', 0) + user_details.get('download_bytes', 0)) / (1024 ** 3)
             expiration_days = user_details.get('expiration_days', 0)
             
-            config_info = {
-                'username': username,
-                'uri': qr_result,
-                'plan': config.get('plan', 'Unknown'),
-                'traffic_limit': traffic_limit,
-                'used_traffic': used_traffic,
-                'expiration_days': expiration_days,
-                'purchase_date': config.get('purchase_date', 'Unknown')
-            }
-            active_configs.append(config_info)
-        except Exception as e:
-            print(f"Error processing config for {username}: {str(e)}")
-            continue
-
-    if not active_configs:
-        bot.reply_to(message, "You don't have any active configurations.")
-        return
-
-    for config in active_configs:
-        try:
-            qr = qrcode.make(config['uri'])
-            bio = io.BytesIO()
-            qr.save(bio, 'PNG')
-            bio.seek(0)
+            is_diagnose = username.endswith('d')
+            mode_text = "(Diagnose Mode)" if is_diagnose else ""
             
             caption = (
-                f"**Configuration Details**\n\n"
+                f"**Configuration {mode_text}**\n\n"
                 f"Plan: {config['plan'].title()}\n"
-                f"Username: {config['username']}\n"
-                f"Traffic Usage: {config['used_traffic']:.2f}GB / {config['traffic_limit']:.2f}GB\n"
-                f"Days Remaining: {config['expiration_days']}\n"
+                f"Username: {username}\n"
+                f"Traffic Usage: {used_traffic:.2f}GB / {traffic_limit:.2f}GB\n"
+                f"Days Remaining: {expiration_days}\n"
                 f"Purchase Date: {config['purchase_date']}\n\n"
-                f"**Connection URI:**\n`{config['uri']}`"
+                f"**Connection URI:**\n`{qr_result}`"
             )
             
+            # Send each config as a separate message
             bot.send_photo(
                 message.chat.id,
                 bio,
                 caption=caption,
                 parse_mode="Markdown"
             )
+            
+            # Add a small delay between messages to avoid flooding
+            time.sleep(1)
+            
         except Exception as e:
-            print(f"Error sending config {config['username']}: {str(e)}")
+            print(f"Error sending config {username}: {str(e)}")
             continue
 
 @bot.message_handler(func=lambda message: message.text == 'View Available Plans')
@@ -569,18 +541,21 @@ def handle_purchase(call):
     user_id = str(call.from_user.id)
     gb = int(gb)
     
-    timestamp = str(int(time.time()))[-6:]  # Last 6 digits of timestamp
-    test_username = f"test{user_id[-4:]}{timestamp}"  # Using last 4 digits of user_id
+    # Generate username with numeric ID and timestamp
+    current_time = time.strftime('%Y%m%d%H%M%S')
+    username = f"{user_id}d{current_time}"
+    if diagnose_mode:
+        username = f"{username}d"
     
-    command = f"python3 {CLI_PATH} add-user -u {test_username} -t {gb} -e 30"
+    command = f"python3 {CLI_PATH} add-user -u {username} -t {gb} -e 30"
     result = run_cli_command(command)
     
     if "Error" in result:
-        bot.answer_callback_query(call.id, "Failed to create test configuration")
-        bot.reply_to(call.message, f"Error creating test configuration: {result}")
+        bot.answer_callback_query(call.id, "Failed to create configuration")
+        bot.reply_to(call.message, f"Error creating configuration: {result}")
         return
 
-    uri_command = f"python3 {CLI_PATH} show-user-uri -u {test_username} -ip 4 -s"
+    uri_command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 4 -s"
     uri_result = run_cli_command(uri_command)
     
     if "Error" not in uri_result:
@@ -590,7 +565,7 @@ def handle_purchase(call):
         
         user_data = load_user_data()
         new_config = {
-            'username': test_username,
+            'username': username,
             'plan': plan_type,
             'purchase_date': time.strftime('%Y-%m-%d %H:%M:%S'),
             'gb': gb,
@@ -610,10 +585,11 @@ def handle_purchase(call):
         qr.save(bio, 'PNG')
         bio.seek(0)
         
+        mode_text = "(Diagnose Mode)" if diagnose_mode else ""
         caption = (
-            f"**Test Configuration Created! (Diagnose Mode)**\n\n"
+            f"**Configuration Created! {mode_text}**\n\n"
             f"Plan: {plan_type.title()} ({gb}GB)\n"
-            f"Username: {test_username}\n"
+            f"Username: {username}\n"
             f"Duration: 30 days\n\n"
             f"**Connection URI:**\n`{qr_result}`"
         )
@@ -656,10 +632,11 @@ def generate_stats(user_data, start_time, end_time=None, diagnose_only=False):
             if end_time and purchase_timestamp > end_time:
                 continue
 
-            is_test = username.startswith('test')
-            if diagnose_only and not is_test:
+            # Check if it's a diagnose mode config
+            is_diagnose = username.endswith('d')
+            if diagnose_only and not is_diagnose:
                 continue
-            if not diagnose_only and is_test:
+            if not diagnose_only and is_diagnose:
                 continue
 
             plan_type = config.get('plan', 'basic')
