@@ -478,45 +478,43 @@ def process_broadcast_message(message, user_type):
         # Load user_data.json to get Telegram IDs
         user_data = load_user_data()
         
+        # Create a mapping of username to telegram_id to avoid duplicates
+        username_to_tid = {}
+        for tid, configs in user_data.items():
+            if isinstance(configs, list):
+                for config in configs:
+                    username = config.get('username')
+                    if username and username in users:  # Only include if user exists in CLI list
+                        username_to_tid[username] = int(tid)
+        
         # Initialize counters
         sent_count = 0
         failed_count = 0
-        total_users = 0
+        processed_tids = set()  # Track which Telegram IDs we've already sent to
         
-        # Process each user
+        # Process each unique username
         for username, details in users.items():
             # Filter based on user type
             if user_type == 'active' and details.get('blocked', False):
                 continue
             if user_type == 'expired' and not details.get('blocked', False):
                 continue
-                
-            # Find Telegram ID for this username
-            telegram_id = None
-            for tid, configs in user_data.items():
-                if isinstance(configs, list):
-                    for config in configs:
-                        if config.get('username') == username:
-                            telegram_id = int(tid)
-                            break
-                    if telegram_id:
-                        break
             
-            if not telegram_id:
-                failed_count += 1
+            telegram_id = username_to_tid.get(username)
+            
+            if not telegram_id or telegram_id in processed_tids:
                 continue
                 
-            total_users += 1
-            
             try:
                 bot.send_message(telegram_id, message.text, parse_mode="Markdown")
                 sent_count += 1
+                processed_tids.add(telegram_id)
                 
                 # Show progress every 5 messages
                 if sent_count % 5 == 0:
                     bot.reply_to(
                         message,
-                        f"Progress: {sent_count}/{total_users} messages sent..."
+                        f"Progress: {sent_count}/{len(username_to_tid)} messages sent..."
                     )
                     
             except Exception as e:
@@ -528,7 +526,7 @@ def process_broadcast_message(message, user_type):
             "📢 *Broadcast Complete*\n\n"
             f"✅ Successfully sent: {sent_count}\n"
             f"❌ Failed to send: {failed_count}\n"
-            f"👥 Total targeted users: {total_users}\n"
+            f"👥 Total unique users: {len(username_to_tid)}\n"
             f"🎯 Selected group: {user_type}"
         )
         bot.reply_to(message, report, parse_mode="Markdown")
