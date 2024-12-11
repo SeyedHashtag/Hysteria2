@@ -8,6 +8,7 @@ import shlex
 import re
 from dotenv import load_dotenv
 from telebot import types
+import time
 
 load_dotenv()
 
@@ -489,13 +490,87 @@ def view_my_config(message):
 @bot.message_handler(func=lambda message: message.text == 'View Available Plans')
 def view_available_plans(message):
     plans = [
-        "🚀 Basic Plan\n- 50GB Traffic\n- 30 Days\n- Price: $5",
-        "⭐ Premium Plan\n- 100GB Traffic\n- 30 Days\n- Price: $10",
-        "💎 Ultimate Plan\n- 200GB Traffic\n- 30 Days\n- Price: $15"
+        "🚀 Basic Plan\n- 30GB Traffic\n- 30 Days\n- Price: $1.8",
+        "⭐ Premium Plan\n- 60GB Traffic\n- 30 Days\n- Price: $3",
+        "💎 Ultimate Plan\n- 100GB Traffic\n- 30 Days\n- Price: $4.2"
     ]
     
-    response = "**Available Plans:**\n\n" + "\n\n".join(plans) + "\n\n_Payment system coming soon!_"
-    bot.reply_to(message, response, parse_mode="Markdown")
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("Purchase Basic Plan (30GB)", callback_data="purchase_plan:basic:30"),
+        types.InlineKeyboardButton("Purchase Premium Plan (60GB)", callback_data="purchase_plan:premium:60"),
+        types.InlineKeyboardButton("Purchase Ultimate Plan (100GB)", callback_data="purchase_plan:ultimate:100")
+    )
+    
+    response = "**Available Plans:**\n\n" + "\n\n".join(plans)
+    if not diagnose_mode:
+        response += "\n\n_Payment system coming soon!_"
+    else:
+        response += "\n\n_⚠️ Diagnose Mode Active: Test purchases available_"
+    
+    bot.reply_to(message, response, reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('purchase_plan:'))
+def handle_purchase(call):
+    if not diagnose_mode:
+        bot.answer_callback_query(call.id, "Payment system is not available yet!")
+        return
+
+    _, plan_type, gb = call.data.split(':')
+    user_id = str(call.from_user.id)
+    gb = int(gb)
+    
+    # Generate a unique username for the test user
+    test_username = f"test_user_{user_id}_{int(time.time())}"
+    
+    # Use existing add-user command with the specified traffic limit
+    command = f"python3 {CLI_PATH} add-user -u {test_username} -t {gb} -e 30"
+    result = run_cli_command(command)
+    
+    if "Error" in result:
+        bot.answer_callback_query(call.id, "Failed to create test configuration")
+        bot.reply_to(call.message, f"Error creating test configuration: {result}")
+        return
+
+    # Save user data
+    user_data = load_user_data()
+    user_data[user_id] = {
+        'username': test_username,
+        'plan': plan_type,
+        'purchase_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'gb': gb,
+        'days': 30
+    }
+    save_user_data(user_data)
+
+    # Get the configuration URI and generate QR code
+    uri_command = f"python3 {CLI_PATH} show-user-uri -u {test_username} -ip 4"
+    uri_result = run_cli_command(uri_command)
+    
+    if "Error" not in uri_result:
+        qr_result = uri_result.replace("IPv4:\n", "").strip()
+        qr = qrcode.make(qr_result)
+        bio = io.BytesIO()
+        qr.save(bio, 'PNG')
+        bio.seek(0)
+        
+        caption = (
+            f"**Test Configuration Created! (Diagnose Mode)**\n\n"
+            f"Plan: {plan_type.title()} ({gb}GB)\n"
+            f"Username: {test_username}\n"
+            f"Duration: 30 days\n\n"
+            f"**Connection URI:**\n`{qr_result}`"
+        )
+        
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        bot.send_photo(
+            call.message.chat.id,
+            bio,
+            caption=caption,
+            parse_mode="Markdown"
+        )
+    else:
+        bot.reply_to(call.message, "Failed to generate configuration URI. Please contact support.")
 
 @bot.message_handler(func=lambda message: message.text == 'Support/Help')
 def support_help(message):
