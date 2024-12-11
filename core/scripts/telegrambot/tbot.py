@@ -171,16 +171,86 @@ def create_client_markup():
     markup.row('⬇️ Downloads', '❓ Support/Help')
     return markup
 
-@bot.message_handler(commands=['start'])
+# Command handlers
+@bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
+    track_command(message.from_user.id, 'start')
     if is_admin(message.from_user.id):
         markup = create_main_markup()
-        bot.reply_to(message, "Welcome to the User Management Bot!", reply_markup=markup)
+        bot.reply_to(message, "Welcome Admin! Choose an option:", reply_markup=markup)
     else:
         markup = create_client_markup()
-        bot.reply_to(message, "Welcome to our VPN service!", reply_markup=markup)
+        help_text = load_help_message() or DEFAULT_HELP_MESSAGE
+        bot.reply_to(message, help_text, reply_markup=markup, parse_mode="Markdown")
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '➕ Add User')
+# Admin menu handlers
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text in [
+    '➕ Add User', '👥 Show User', '❌ Delete User', '📊 Server Info',
+    '💾 Backup Server', '📈 Sales Stats', '📊 User Stats', '🔔 Notifications',
+    '🔄 Update All Users', '📝 Edit Help Message', '📢 Broadcast Message',
+    '🔍 Toggle Diagnose Mode', '📋 Templates'
+])
+def handle_admin_menu(message):
+    track_command(message.from_user.id, message.text)
+    if message.text == '➕ Add User':
+        add_user(message)
+    elif message.text == '👥 Show User':
+        show_user(message)
+    elif message.text == '❌ Delete User':
+        delete_user(message)
+    elif message.text == '📊 Server Info':
+        server_info(message)
+    elif message.text == '💾 Backup Server':
+        backup_server(message)
+    elif message.text == '📈 Sales Stats':
+        show_sales_stats(message)
+    elif message.text == '📊 User Stats':
+        show_user_stats(message)
+    elif message.text == '🔄 Update All Users':
+        update_all_users(message)
+    elif message.text == '📝 Edit Help Message':
+        edit_help_message(message)
+    elif message.text == '📢 Broadcast Message':
+        broadcast_message(message)
+    elif message.text == '🔍 Toggle Diagnose Mode':
+        toggle_diagnose_mode(message)
+    elif message.text == '📋 Templates':
+        show_templates(message)
+
+# Client menu handlers
+@bot.message_handler(func=lambda message: not is_admin(message.from_user.id) and message.text in [
+    '👤 View My Config', '💰 View Available Plans', '📥 Downloads',
+    '❓ Support/Help'
+])
+def handle_client_menu(message):
+    track_command(message.from_user.id, message.text)
+    if message.text == '👤 View My Config':
+        view_my_config(message)
+    elif message.text == '💰 View Available Plans':
+        view_available_plans(message)
+    elif message.text == '📥 Downloads':
+        show_downloads(message)
+    elif message.text == '❓ Support/Help':
+        support_help(message)
+
+# Feedback command handler
+@bot.message_handler(commands=['feedback'])
+def handle_feedback_command(message):
+    collect_feedback(message)
+
+# Inline query handler
+@bot.inline_handler(lambda query: True)
+def handle_inline(query):
+    handle_inline_query(query)
+
+# Error handler
+@bot.message_handler(func=lambda message: True)
+def handle_unknown(message):
+    if is_admin(message.from_user.id):
+        bot.reply_to(message, "⚠️ Unknown command. Please use the menu buttons.")
+    else:
+        bot.reply_to(message, "⚠️ Unknown command. Please use the menu or type /help for assistance.")
+
 def add_user(message):
     msg = bot.reply_to(message, "Enter username:")
     bot.register_next_step_handler(msg, process_add_user_step1)
@@ -245,7 +315,6 @@ def process_add_user_step3(message, username, traffic_limit):
     except ValueError:
         bot.reply_to(message, "Invalid expiration days. Please enter a number.")
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '👥 Show User')
 def show_user(message):
     msg = bot.reply_to(message, "Enter username:")
     bot.register_next_step_handler(msg, process_show_user)
@@ -361,94 +430,12 @@ def process_show_user(message):
     )
 
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📊 Server Info')
 def server_info(message):
     command = f"python3 {CLI_PATH} server-info"
     result = run_cli_command(command)
     bot.send_chat_action(message.chat.id, 'typing')
     bot.reply_to(message, result)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_') or call.data.startswith('renew_') or call.data.startswith('block_') or call.data.startswith('reset_') or call.data.startswith('ipv6_'))
-def handle_edit_callback(call):
-    action, username = call.data.split(':')
-    if action == 'edit_username':
-        msg = bot.send_message(call.message.chat.id, f"Enter new username for {username}:")
-        bot.register_next_step_handler(msg, process_edit_username, username)
-    elif action == 'edit_traffic':
-        msg = bot.send_message(call.message.chat.id, f"Enter new traffic limit (GB) for {username}:")
-        bot.register_next_step_handler(msg, process_edit_traffic, username)
-    elif action == 'edit_expiration':
-        msg = bot.send_message(call.message.chat.id, f"Enter new expiration days for {username}:")
-        bot.register_next_step_handler(msg, process_edit_expiration, username)
-    elif action == 'renew_password':
-        command = f"python3 {CLI_PATH} edit-user -u {username} -rp"
-        result = run_cli_command(command)
-        bot.send_message(call.message.chat.id, result)
-    elif action == 'renew_creation':
-        command = f"python3 {CLI_PATH} edit-user -u {username} -rc"
-        result = run_cli_command(command)
-        bot.send_message(call.message.chat.id, result)
-    elif action == 'block_user':
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("True", callback_data=f"confirm_block:{username}:true"),
-                   types.InlineKeyboardButton("False", callback_data=f"confirm_block:{username}:false"))
-        bot.send_message(call.message.chat.id, f"Set block status for {username}:", reply_markup=markup)
-    elif action == 'reset_user':
-        command = f"python3 {CLI_PATH} reset-user -u {username}"
-        result = run_cli_command(command)
-        bot.send_message(call.message.chat.id, result)
-    elif action == 'ipv6_uri':
-        command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 6"
-        result = run_cli_command(command)
-        if "Error" in result or "Invalid" in result:
-            bot.send_message(call.message.chat.id, result)
-            return
-        
-        uri_v6 = result.split('\n')[-1].strip()
-        qr_v6 = qrcode.make(uri_v6)
-        bio_v6 = io.BytesIO()
-        qr_v6.save(bio_v6, 'PNG')
-        bio_v6.seek(0)
-        
-        bot.send_photo(
-            call.message.chat.id,
-            bio_v6,
-            caption=f"**IPv6 URI for {username}:**\n\n`{uri_v6}`",
-            parse_mode="Markdown"
-        )
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_block:'))
-def handle_block_confirmation(call):
-    _, username, block_status = call.data.split(':')
-    command = f"python3 {CLI_PATH} edit-user -u {username} {'-b' if block_status == 'true' else ''}"
-    result = run_cli_command(command)
-    bot.send_message(call.message.chat.id, result)
-
-def process_edit_username(message, username):
-    new_username = message.text.strip()
-    command = f"python3 {CLI_PATH} edit-user -u {username} -nu {new_username}"
-    result = run_cli_command(command)
-    bot.reply_to(message, result)
-
-def process_edit_traffic(message, username):
-    try:
-        new_traffic_limit = int(message.text.strip())
-        command = f"python3 {CLI_PATH} edit-user -u {username} -nt {new_traffic_limit}"
-        result = run_cli_command(command)
-        bot.reply_to(message, result)
-    except ValueError:
-        bot.reply_to(message, "Invalid traffic limit. Please enter a number.")
-
-def process_edit_expiration(message, username):
-    try:
-        new_expiration_days = int(message.text.strip())
-        command = f"python3 {CLI_PATH} edit-user -u {username} -ne {new_expiration_days}"
-        result = run_cli_command(command)
-        bot.reply_to(message, result)
-    except ValueError:
-        bot.reply_to(message, "Invalid expiration days. Please enter a number.")
-
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '❌ Delete User')
 def delete_user(message):
     msg = bot.reply_to(message, "Enter username:")
     bot.register_next_step_handler(msg, process_delete_user)
@@ -470,7 +457,6 @@ def process_delete_user(message):
     
     bot.reply_to(message, result)
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '💾 Backup Server')
 def backup_server(message):
     bot.reply_to(message, "Starting backup. This may take a few moments...")
     bot.send_chat_action(message.chat.id, 'typing')
@@ -499,38 +485,6 @@ def backup_server(message):
     else:
         bot.reply_to(message, "No backup file found after the backup process.")
 
-@bot.inline_handler(lambda query: is_admin(query.from_user.id))
-def handle_inline_query(query):
-    command = f"python3 {CLI_PATH} list-users"
-    result = run_cli_command(command)
-    try:
-        users = json.loads(result)
-    except json.JSONDecodeError:
-        bot.answer_inline_query(query.id, results=[], switch_pm_text="Error retrieving users.", switch_pm_user_id=query.from_user.id)
-        return
-
-    query_text = query.query.lower()
-    results = []
-    for username, details in users.items():
-        if query_text in username.lower():
-            title = f"{username}"
-            description = f"Traffic Limit: {details['max_download_bytes'] / (1024 ** 3):.2f} GB, Expiration Days: {details['expiration_days']}"
-            results.append(types.InlineQueryResultArticle(
-                id=username,
-                title=title,
-                description=description,
-                input_message_content=types.InputTextMessageContent(
-                    message_text=f"Name: {username}\n"
-                                 f"Traffic limit: {details['max_download_bytes'] / (1024 ** 3):.2f} GB\n"
-                                 f"Days: {details['expiration_days']}\n"
-                                 f"Account Creation: {details['account_creation_date']}\n"
-                                 f"Blocked: {details['blocked']}"
-                )
-            ))
-
-    bot.answer_inline_query(query.id, results, cache_time=0)
-
-@bot.message_handler(func=lambda message: message.text == '⬇️ Downloads')
 def show_downloads(message):
     markup = types.InlineKeyboardMarkup()
     
@@ -575,14 +529,12 @@ def show_downloads(message):
         reply_markup=markup
     )
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '🔄 Toggle Diagnose Mode')
 def toggle_diagnose_mode(message):
     global diagnose_mode
     diagnose_mode = not diagnose_mode
     status = "ON" if diagnose_mode else "OFF"
     bot.reply_to(message, f"Diagnose mode is now {status}.")
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📢 Broadcast Message')
 def broadcast_message(message):
     markup = types.InlineKeyboardMarkup()
     all_users = types.InlineKeyboardButton("👥 All Users", callback_data="broadcast:all")
@@ -594,7 +546,6 @@ def broadcast_message(message):
     
     bot.reply_to(message, "Select users to send message to:", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('broadcast:'))
 def handle_broadcast_selection(call):
     _, user_type = call.data.split(':')
     msg = bot.send_message(
@@ -715,7 +666,6 @@ DEFAULT_HELP_MESSAGE = """**Welcome to Our VPN Service!**\n\n
 🔹 To download VPN client, click 'Downloads'\n\n
 For support, contact: @admin_username"""
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📝 Edit Help Message')
 def edit_help_message(message):
     current_message = load_help_message()
     msg = bot.reply_to(message, 
@@ -731,7 +681,6 @@ def process_edit_help_message(message):
     save_help_message(message.text)
     bot.reply_to(message, "Help message updated successfully!")
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '🔄 Update All Users')
 def update_all_users(message):
     markup = types.InlineKeyboardMarkup()
     days_btn = types.InlineKeyboardButton("➕ Add Days", callback_data="update_all:days")
@@ -740,7 +689,6 @@ def update_all_users(message):
     
     bot.reply_to(message, "Choose what to update for all users:", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('update_all:'))
 def handle_update_all(call):
     _, update_type = call.data.split(':')
     if update_type == 'days':
@@ -804,7 +752,6 @@ def process_update_all_data(message):
     except ValueError:
         bot.reply_to(message, "❌ Please enter a valid number.")
 
-@bot.message_handler(func=lambda message: message.text == '📱 View My Config')
 def view_my_config(message):
     user_id = str(message.from_user.id)
     user_data = load_user_data()
@@ -893,7 +840,6 @@ def view_my_config(message):
             print(f"Error sending config {username}: {str(e)}")
             continue
 
-@bot.message_handler(func=lambda message: message.text == '💰 View Available Plans')
 def view_available_plans(message):
     plans = [
         "🚀 Basic Plan\n- 30GB Traffic\n- 30 Days\n- Price: $1.8",
@@ -916,7 +862,6 @@ def view_available_plans(message):
     
     bot.reply_to(message, response, reply_markup=markup, parse_mode="Markdown")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('purchase_plan:'))
 def handle_purchase(call):
     if not diagnose_mode:
         bot.answer_callback_query(call.id, "Payment system is not available yet!")
@@ -1031,7 +976,6 @@ def generate_stats(user_data, start_time, end_time=None, diagnose_only=False):
 
     return total_configs, total_profit, plan_counts
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📈 Sales Stats')
 def show_sales_stats(message):
     user_data = load_user_data()
     current_time = time.time()
@@ -1077,7 +1021,6 @@ def show_sales_stats(message):
 
     bot.reply_to(message, stats_message, parse_mode="Markdown")
 
-@bot.message_handler(func=lambda message: message.text == '❓ Support/Help')
 def support_help(message):
     help_text = load_help_message()
     bot.reply_to(message, help_text, parse_mode="Markdown")
@@ -1085,7 +1028,6 @@ def support_help(message):
 def is_admin(user_id):
     return user_id in ADMIN_USER_IDS
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📊 User Stats')
 def show_user_stats(message):
     track_command(message.from_user.id, 'user_stats')
     try:
@@ -1220,7 +1162,6 @@ def run_scheduler():
 scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
 scheduler_thread.start()
 
-@bot.message_handler(commands=['feedback'])
 def collect_feedback(message):
     track_command(message.from_user.id, 'feedback')
     if not rate_limiter.is_allowed(message.from_user.id):
@@ -1250,7 +1191,6 @@ def process_feedback(message):
         log_error(e, "process_feedback")
         bot.reply_to(message, "❌ Sorry, there was an error saving your feedback. Please try again later.")
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📋 Templates')
 def show_templates(message):
     track_command(message.from_user.id, 'show_templates')
     markup = types.InlineKeyboardMarkup()
@@ -1269,7 +1209,6 @@ def show_templates(message):
         parse_mode="Markdown"
     )
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('template_'))
 def handle_template_selection(call):
     if not is_admin(call.from_user.id):
         return
