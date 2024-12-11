@@ -9,17 +9,143 @@ import re
 from dotenv import load_dotenv
 from telebot import types
 import time
+import logging
+from datetime import datetime
+from collections import defaultdict
+import threading
+import schedule
 
 load_dotenv()
 
+# Bot Configuration
 API_TOKEN = os.getenv('API_TOKEN')
 ADMIN_USER_IDS = json.loads(os.getenv('ADMIN_USER_IDS'))
 CLI_PATH = '/etc/hysteria/core/cli.py'
 BACKUP_DIRECTORY = '/opt/hysbackup'
-USER_DATA_FILE = '/etc/hysteria/user_data.json'  # Changed to server directory
-diagnose_mode = False
+USER_DATA_FILE = '/etc/hysteria/user_data.json'
+HELP_MESSAGE_FILE = '/etc/hysteria/help_message.txt'
+ANALYTICS_FILE = '/etc/hysteria/analytics.json'
+FEEDBACK_FILE = '/etc/hysteria/feedback.json'
+LOG_DIRECTORY = '/var/log/hysteria'
 
+# Create necessary directories
+os.makedirs(LOG_DIRECTORY, exist_ok=True)
+os.makedirs(BACKUP_DIRECTORY, exist_ok=True)
+
+# Configuration Constants
+MAX_BACKUPS = 5  # Maximum number of backup files to keep
+NOTIFICATION_THRESHOLDS = {
+    'traffic': 0.9,  # 90% of traffic limit
+    'expiry': 3      # 3 days before expiry
+}
+
+# Config Templates
+CONFIG_TEMPLATES = {
+    'basic': {'traffic': 30, 'days': 30, 'name': 'Basic Plan'},
+    'premium': {'traffic': 60, 'days': 30, 'name': 'Premium Plan'},
+    'ultimate': {'traffic': 100, 'days': 30, 'name': 'Ultimate Plan'}
+}
+
+# Setup Logging
+logging.basicConfig(
+    filename=os.path.join(LOG_DIRECTORY, f'bot_{datetime.now().strftime("%Y%m")}.log'),
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+# Rate Limiting
+class RateLimit:
+    def __init__(self, max_requests=5, window_seconds=60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests = defaultdict(list)
+    
+    def is_allowed(self, user_id):
+        now = time.time()
+        self.requests[user_id] = [t for t in self.requests[user_id] 
+                                if now - t < self.window_seconds]
+        if len(self.requests[user_id]) >= self.max_requests:
+            return False
+        self.requests[user_id].append(now)
+        return True
+
+# Initialize rate limiter
+rate_limiter = RateLimit()
+
+# Initialize bot
 bot = telebot.TeleBot(API_TOKEN)
+
+# Analytics Functions
+def save_analytics(data):
+    try:
+        analytics = []
+        if os.path.exists(ANALYTICS_FILE):
+            with open(ANALYTICS_FILE, 'r') as f:
+                analytics = json.load(f)
+        analytics.append(data)
+        with open(ANALYTICS_FILE, 'w') as f:
+            json.dump(analytics, f)
+    except Exception as e:
+        logging.error(f"Error saving analytics: {e}")
+
+def track_command(user_id, command):
+    analytics_data = {
+        'timestamp': time.time(),
+        'user_id': user_id,
+        'command': command,
+        'user_type': 'admin' if is_admin(user_id) else 'user'
+    }
+    save_analytics(analytics_data)
+
+def save_feedback(feedback_data):
+    try:
+        feedback_list = []
+        if os.path.exists(FEEDBACK_FILE):
+            with open(FEEDBACK_FILE, 'r') as f:
+                feedback_list = json.load(f)
+        feedback_list.append(feedback_data)
+        with open(FEEDBACK_FILE, 'w') as f:
+            json.dump(feedback_list, f)
+    except Exception as e:
+        logging.error(f"Error saving feedback: {e}")
+
+def notify_admin_feedback(feedback_data):
+    feedback_msg = (
+        f"📝 *New Feedback Received*\n\n"
+        f"From: {feedback_data['username'] or 'Anonymous'}\n"
+        f"User ID: {feedback_data['user_id']}\n"
+        f"Time: {datetime.fromtimestamp(feedback_data['timestamp']).strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        f"Feedback:\n{feedback_data['feedback']}"
+    )
+    for admin_id in ADMIN_USER_IDS:
+        try:
+            bot.send_message(admin_id, feedback_msg, parse_mode="Markdown")
+        except:
+            logging.error(f"Failed to notify admin {admin_id} about feedback")
+
+def is_critical_error(error):
+    critical_patterns = [
+        "authentication failed",
+        "permission denied",
+        "connection refused",
+        "database error",
+        "fatal error"
+    ]
+    return any(pattern in str(error).lower() for pattern in critical_patterns)
+
+def notify_admin(message):
+    for admin_id in ADMIN_USER_IDS:
+        try:
+            bot.send_message(admin_id, message, parse_mode="Markdown")
+        except:
+            logging.error(f"Failed to notify admin {admin_id}")
+
+def log_error(error, context=None):
+    logging.error(f"Error: {error}, Context: {context}")
+    if is_critical_error(error):
+        notify_admin(f"🚨 *Critical Error*\n\n{error}\nContext: {context}")
+
+diagnose_mode = False
 
 def run_cli_command(command):
     try:
@@ -31,20 +157,19 @@ def run_cli_command(command):
 
 def create_main_markup():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row('Add User', 'Show User')
-    markup.row('Delete User', 'Server Info')
-    markup.row('Backup Server', 'Sales Stats')
-    markup.row('Toggle Diagnose Mode')
+    markup.row('➕ Add User', '👥 Show User')
+    markup.row('❌ Delete User', '📊 Server Info')
+    markup.row('💾 Backup Server', '📈 Sales Stats')
+    markup.row('📊 User Stats', '🔔 Notifications')
+    markup.row('🔄 Update All Users', '📝 Edit Help Message')
+    markup.row('📢 Broadcast Message', '🔍 Toggle Diagnose Mode')
     return markup
 
 def create_client_markup():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row('View My Config', 'View Available Plans')
-    markup.row('Downloads', 'Support/Help')
+    markup.row('📱 View My Config', '💰 View Available Plans')
+    markup.row('⬇️ Downloads', '❓ Support/Help')
     return markup
-
-def is_admin(user_id):
-    return user_id in ADMIN_USER_IDS
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -55,7 +180,7 @@ def send_welcome(message):
         markup = create_client_markup()
         bot.reply_to(message, "Welcome to our VPN service!", reply_markup=markup)
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Add User')
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '➕ Add User')
 def add_user(message):
     msg = bot.reply_to(message, "Enter username:")
     bot.register_next_step_handler(msg, process_add_user_step1)
@@ -120,7 +245,7 @@ def process_add_user_step3(message, username, traffic_limit):
     except ValueError:
         bot.reply_to(message, "Invalid expiration days. Please enter a number.")
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Show User')
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '👥 Show User')
 def show_user(message):
     msg = bot.reply_to(message, "Enter username:")
     bot.register_next_step_handler(msg, process_show_user)
@@ -236,7 +361,7 @@ def process_show_user(message):
     )
 
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Server Info')
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📊 Server Info')
 def server_info(message):
     command = f"python3 {CLI_PATH} server-info"
     result = run_cli_command(command)
@@ -323,7 +448,7 @@ def process_edit_expiration(message, username):
     except ValueError:
         bot.reply_to(message, "Invalid expiration days. Please enter a number.")
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Delete User')
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '❌ Delete User')
 def delete_user(message):
     msg = bot.reply_to(message, "Enter username:")
     bot.register_next_step_handler(msg, process_delete_user)
@@ -332,9 +457,20 @@ def process_delete_user(message):
     username = message.text.strip().lower()
     command = f"python3 {CLI_PATH} remove-user -u {username}"
     result = run_cli_command(command)
+    
+    if "Error" not in result:
+        # Remove from user_data.json
+        user_data = load_user_data()
+        for user_id, user_configs in user_data.items():
+            if isinstance(user_configs, list):
+                user_data[user_id] = [config for config in user_configs if config.get('username') != username]
+            elif isinstance(user_configs, dict) and user_configs.get('username') == username:
+                del user_data[user_id]
+        save_user_data(user_data)
+    
     bot.reply_to(message, result)
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Backup Server')
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '💾 Backup Server')
 def backup_server(message):
     bot.reply_to(message, "Starting backup. This may take a few moments...")
     bot.send_chat_action(message.chat.id, 'typing')
@@ -394,17 +530,17 @@ def handle_inline_query(query):
 
     bot.answer_inline_query(query.id, results, cache_time=0)
 
-@bot.message_handler(func=lambda message: message.text == 'Downloads')
+@bot.message_handler(func=lambda message: message.text == '⬇️ Downloads')
 def show_downloads(message):
     markup = types.InlineKeyboardMarkup()
     
     # Android buttons
     android_play = types.InlineKeyboardButton(
-        "Android (PlayStore)", 
+        "📱 Android (PlayStore)", 
         url="https://play.google.com/store/apps/details?id=app.hiddify.com&hl=en"
     )
     android_github = types.InlineKeyboardButton(
-        "Android (Github)", 
+        "📱 Android (Github)", 
         url="https://github.com/hiddify/hiddify-next/releases/download/v2.0.5/Hiddify-Android-arm64.apk"
     )
     markup.row(android_play)
@@ -412,21 +548,21 @@ def show_downloads(message):
     
     # iOS button
     ios = types.InlineKeyboardButton(
-        "iOS (AppStore)", 
+        "🍎 iOS (AppStore)", 
         url="https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532"
     )
     markup.row(ios)
     
     # Windows button
     windows = types.InlineKeyboardButton(
-        "Windows (Github)", 
+        "💻 Windows (Github)", 
         url="https://github.com/hiddify/hiddify-next/releases/download/v2.0.5/Hiddify-Windows-Setup-x64.exe"
     )
     markup.row(windows)
     
     # Other platforms button
     other_platforms = types.InlineKeyboardButton(
-        "Other platforms (Github)", 
+        "🌐 Other platforms (Github)", 
         url="https://github.com/hiddify/hiddify-app/releases/tag/v2.0.5"
     )
     markup.row(other_platforms)
@@ -439,12 +575,105 @@ def show_downloads(message):
         reply_markup=markup
     )
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Toggle Diagnose Mode')
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '🔄 Toggle Diagnose Mode')
 def toggle_diagnose_mode(message):
     global diagnose_mode
     diagnose_mode = not diagnose_mode
     status = "ON" if diagnose_mode else "OFF"
     bot.reply_to(message, f"Diagnose mode is now {status}.")
+
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📢 Broadcast Message')
+def broadcast_message(message):
+    markup = types.InlineKeyboardMarkup()
+    all_users = types.InlineKeyboardButton("👥 All Users", callback_data="broadcast:all")
+    active_users = types.InlineKeyboardButton("✅ Active Users", callback_data="broadcast:active")
+    expired_users = types.InlineKeyboardButton("⛔️ Expired Users", callback_data="broadcast:expired")
+    markup.row(all_users)
+    markup.row(active_users)
+    markup.row(expired_users)
+    
+    bot.reply_to(message, "Select users to send message to:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('broadcast:'))
+def handle_broadcast_selection(call):
+    _, user_type = call.data.split(':')
+    msg = bot.send_message(
+        call.message.chat.id, 
+        "Enter your message to broadcast:\n\n"
+        "Note: You can use Markdown formatting.\n"
+        "Use /cancel to cancel broadcasting."
+    )
+    bot.register_next_step_handler(msg, process_broadcast_message, user_type)
+
+def process_broadcast_message(message, user_type):
+    if message.text == '/cancel':
+        bot.reply_to(message, "Broadcasting cancelled.")
+        return
+
+    # Get all users from CLI
+    command = f"python3 {CLI_PATH} list-users"
+    result = run_cli_command(command)
+    try:
+        users = json.loads(result)
+    except json.JSONDecodeError:
+        bot.reply_to(message, "❌ Error: Could not get user list.")
+        return
+
+    # Load user_data.json to get Telegram IDs
+    user_data = load_user_data()
+    
+    # Create a mapping of usernames to telegram IDs
+    username_to_tid = {}
+    for tid, configs in user_data.items():
+        if isinstance(configs, list):
+            for config in configs:
+                username = config.get('username')
+                if username:
+                    username_to_tid[username] = tid
+
+    sent_count = 0
+    failed_count = 0
+    
+    # Filter users based on selection
+    target_users = []
+    for username, details in users.items():
+        if user_type == 'all':
+            target_users.append(username)
+        elif user_type == 'active' and not details.get('blocked', False):
+            target_users.append(username)
+        elif user_type == 'expired' and details.get('blocked', False):
+            target_users.append(username)
+
+    # Send progress message
+    progress_msg = bot.reply_to(message, f"📤 Sending messages to {len(target_users)} users...")
+
+    # Send messages
+    for username in target_users:
+        tid = username_to_tid.get(username)
+        if tid:
+            try:
+                bot.send_message(int(tid), message.text, parse_mode="Markdown")
+                sent_count += 1
+                # Update progress every 5 messages
+                if sent_count % 5 == 0:
+                    bot.edit_message_text(
+                        f"📤 Sending messages... ({sent_count}/{len(target_users)})",
+                        message.chat.id,
+                        progress_msg.message_id
+                    )
+            except Exception as e:
+                print(f"Failed to send message to {username}: {str(e)}")
+                failed_count += 1
+
+    # Final report
+    report = (
+        f"📢 *Broadcast Complete*\n\n"
+        f"✅ Successfully sent: {sent_count}\n"
+        f"❌ Failed: {failed_count}\n"
+        f"👥 Total users targeted: {len(target_users)}\n\n"
+        f"User group: {user_type.title()}"
+    )
+    bot.edit_message_text(report, message.chat.id, progress_msg.message_id, parse_mode="Markdown")
 
 def load_user_data():
     try:
@@ -464,7 +693,118 @@ def save_user_data(data):
     except Exception as e:
         print(f"Error saving user data: {str(e)}")
 
-@bot.message_handler(func=lambda message: message.text == 'View My Config')
+def load_help_message():
+    try:
+        if os.path.exists(HELP_MESSAGE_FILE):
+            with open(HELP_MESSAGE_FILE, 'r') as f:
+                return f.read()
+    except Exception as e:
+        print(f"Error loading help message: {str(e)}")
+    return DEFAULT_HELP_MESSAGE
+
+def save_help_message(message):
+    try:
+        with open(HELP_MESSAGE_FILE, 'w') as f:
+            f.write(message)
+    except Exception as e:
+        print(f"Error saving help message: {str(e)}")
+
+DEFAULT_HELP_MESSAGE = """**Welcome to Our VPN Service!**\n\n
+🔹 To view your configurations, click 'View My Config'\n
+🔹 To see available plans, click 'View Available Plans'\n
+🔹 To download VPN client, click 'Downloads'\n\n
+For support, contact: @admin_username"""
+
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📝 Edit Help Message')
+def edit_help_message(message):
+    current_message = load_help_message()
+    msg = bot.reply_to(message, 
+                      "Current help message is:\n\n" + current_message + 
+                      "\n\nSend the new help message (or 'cancel' to keep current):")
+    bot.register_next_step_handler(msg, process_edit_help_message)
+
+def process_edit_help_message(message):
+    if message.text.lower() == 'cancel':
+        bot.reply_to(message, "Help message update cancelled.")
+        return
+    
+    save_help_message(message.text)
+    bot.reply_to(message, "Help message updated successfully!")
+
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '🔄 Update All Users')
+def update_all_users(message):
+    markup = types.InlineKeyboardMarkup()
+    days_btn = types.InlineKeyboardButton("➕ Add Days", callback_data="update_all:days")
+    data_btn = types.InlineKeyboardButton("📊 Add Data", callback_data="update_all:data")
+    markup.row(days_btn, data_btn)
+    
+    bot.reply_to(message, "Choose what to update for all users:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('update_all:'))
+def handle_update_all(call):
+    _, update_type = call.data.split(':')
+    if update_type == 'days':
+        msg = bot.send_message(call.message.chat.id, "Enter the number of days to add:")
+        bot.register_next_step_handler(msg, process_update_all_days)
+    else:
+        msg = bot.send_message(call.message.chat.id, "Enter the amount of data to add (in GB):")
+        bot.register_next_step_handler(msg, process_update_all_data)
+
+def process_update_all_days(message):
+    try:
+        days = int(message.text)
+        command = f"python3 {CLI_PATH} list-users"
+        result = run_cli_command(command)
+        users = json.loads(result)
+        
+        success_count = 0
+        for username in users.keys():
+            update_command = f"python3 {CLI_PATH} edit-user -u {username} -e {days}"
+            update_result = run_cli_command(update_command)
+            if "Error" not in update_result:
+                success_count += 1
+                
+                # Update user_data.json
+                user_data = load_user_data()
+                for user_id, user_configs in user_data.items():
+                    if isinstance(user_configs, list):
+                        for config in user_configs:
+                            if config.get('username') == username:
+                                config['days'] = config.get('days', 30) + days
+                save_user_data(user_data)
+        
+        bot.reply_to(message, f"✅ Successfully added {days} days to {success_count} users!")
+    except ValueError:
+        bot.reply_to(message, "❌ Please enter a valid number.")
+
+def process_update_all_data(message):
+    try:
+        gb = int(message.text)
+        command = f"python3 {CLI_PATH} list-users"
+        result = run_cli_command(command)
+        users = json.loads(result)
+        
+        success_count = 0
+        for username in users.keys():
+            update_command = f"python3 {CLI_PATH} edit-user -u {username} -t {gb}"
+            update_result = run_cli_command(update_command)
+            if "Error" not in update_result:
+                success_count += 1
+                
+                # Update user_data.json
+                user_data = load_user_data()
+                for user_id, user_configs in user_data.items():
+                    if isinstance(user_configs, list):
+                        for config in user_configs:
+                            if config.get('username') == username:
+                                config['gb'] = config.get('gb', 0) + gb
+                save_user_data(user_data)
+        
+        bot.reply_to(message, f"✅ Successfully added {gb}GB to {success_count} users!")
+    except ValueError:
+        bot.reply_to(message, "❌ Please enter a valid number.")
+
+@bot.message_handler(func=lambda message: message.text == '📱 View My Config')
 def view_my_config(message):
     user_id = str(message.from_user.id)
     user_data = load_user_data()
@@ -553,7 +893,7 @@ def view_my_config(message):
             print(f"Error sending config {username}: {str(e)}")
             continue
 
-@bot.message_handler(func=lambda message: message.text == 'View Available Plans')
+@bot.message_handler(func=lambda message: message.text == '💰 View Available Plans')
 def view_available_plans(message):
     plans = [
         "🚀 Basic Plan\n- 30GB Traffic\n- 30 Days\n- Price: $1.8",
@@ -691,7 +1031,7 @@ def generate_stats(user_data, start_time, end_time=None, diagnose_only=False):
 
     return total_configs, total_profit, plan_counts
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Sales Stats')
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📈 Sales Stats')
 def show_sales_stats(message):
     user_data = load_user_data()
     current_time = time.time()
@@ -737,19 +1077,259 @@ def show_sales_stats(message):
 
     bot.reply_to(message, stats_message, parse_mode="Markdown")
 
-@bot.message_handler(func=lambda message: message.text == 'Support/Help')
+@bot.message_handler(func=lambda message: message.text == '❓ Support/Help')
 def support_help(message):
-    help_text = (
-        "**Welcome to Our VPN Service!**\n\n"
-        "Here's how to use the bot:\n\n"
-        "📱 **Commands:**\n"
-        "- View My Config: Check your active configuration\n"
-        "- View Available Plans: See our pricing plans\n"
-        "- Support/Help: Show this help message\n\n"
-        "🔧 **Need Help?**\n"
-        "Contact our support: @YourSupportUsername"
-    )
+    help_text = load_help_message()
     bot.reply_to(message, help_text, parse_mode="Markdown")
+
+def is_admin(user_id):
+    return user_id in ADMIN_USER_IDS
+
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📊 User Stats')
+def show_user_stats(message):
+    track_command(message.from_user.id, 'user_stats')
+    try:
+        command = f"python3 {CLI_PATH} list-users"
+        result = run_cli_command(command)
+        users = json.loads(result)
+        
+        # Calculate statistics
+        active_users = sum(1 for u in users.values() if not u.get('blocked', False))
+        expired_users = sum(1 for u in users.values() if u.get('blocked', False))
+        total_traffic = sum((u.get('upload_bytes', 0) + u.get('download_bytes', 0)) 
+                          for u in users.values()) / (1024**3)
+        
+        # Calculate average usage
+        active_traffic = 0
+        active_count = 0
+        for u in users.values():
+            if not u.get('blocked', False):
+                active_traffic += (u.get('upload_bytes', 0) + u.get('download_bytes', 0))
+                active_count += 1
+        avg_usage = (active_traffic / (1024**3)) / active_count if active_count > 0 else 0
+        
+        stats = (
+            "📊 *User Statistics*\n\n"
+            f"👥 *Total Users:* {len(users)}\n"
+            f"✅ *Active Users:* {active_users}\n"
+            f"⛔️ *Expired Users:* {expired_users}\n"
+            f"📈 *Total Traffic:* {total_traffic:.2f}GB\n"
+            f"📊 *Average Usage:* {avg_usage:.2f}GB per active user\n\n"
+            f"*Usage Distribution:*\n"
+            f"🟢 Low Usage (<5GB): {sum(1 for u in users.values() if (u.get('upload_bytes', 0) + u.get('download_bytes', 0)) < 5*(1024**3))}\n"
+            f"🟡 Medium Usage (5-20GB): {sum(1 for u in users.values() if 5*(1024**3) <= (u.get('upload_bytes', 0) + u.get('download_bytes', 0)) < 20*(1024**3))}\n"
+            f"🔴 High Usage (>20GB): {sum(1 for u in users.values() if (u.get('upload_bytes', 0) + u.get('download_bytes', 0)) >= 20*(1024**3))}"
+        )
+        
+        bot.reply_to(message, stats, parse_mode="Markdown")
+    except Exception as e:
+        log_error(e, "show_user_stats")
+        bot.reply_to(message, "❌ Error fetching user statistics.")
+
+def check_and_notify_users():
+    try:
+        command = f"python3 {CLI_PATH} list-users"
+        result = run_cli_command(command)
+        users = json.loads(result)
+        user_data = load_user_data()
+        
+        for username, details in users.items():
+            # Find Telegram ID
+            telegram_id = None
+            for tid, configs in user_data.items():
+                if isinstance(configs, list):
+                    for config in configs:
+                        if config.get('username') == username:
+                            telegram_id = int(tid)
+                            break
+            
+            if not telegram_id:
+                continue
+                
+            traffic_used = (details.get('upload_bytes', 0) + details.get('download_bytes', 0))
+            traffic_limit = details.get('max_download_bytes', 0)
+            days_left = details.get('expiration_days', 0)
+            
+            # Traffic warning
+            if traffic_limit > 0:
+                usage_percent = traffic_used / traffic_limit
+                if usage_percent > NOTIFICATION_THRESHOLDS['traffic']:
+                    remaining_gb = (traffic_limit - traffic_used) / (1024**3)
+                    msg = (
+                        "⚠️ *Traffic Warning*\n\n"
+                        f"You have used {usage_percent*100:.1f}% of your traffic allowance.\n"
+                        f"Remaining: {remaining_gb:.2f}GB"
+                    )
+                    try:
+                        bot.send_message(telegram_id, msg, parse_mode="Markdown")
+                    except:
+                        logging.error(f"Failed to send traffic warning to user {username}")
+            
+            # Expiry warning
+            if 0 < days_left <= NOTIFICATION_THRESHOLDS['expiry']:
+                msg = (
+                    "⚠️ *Expiration Warning*\n\n"
+                    f"Your configuration will expire in {days_left} days.\n"
+                    "Please renew your subscription to avoid service interruption."
+                )
+                try:
+                    bot.send_message(telegram_id, msg, parse_mode="Markdown")
+                except:
+                    logging.error(f"Failed to send expiry warning to user {username}")
+    
+    except Exception as e:
+        log_error(e, "check_and_notify_users")
+
+def scheduled_backup():
+    try:
+        # Create backup
+        backup_command = f"python3 {CLI_PATH} backup-hysteria"
+        result = run_cli_command(backup_command)
+        
+        if "Error" in result:
+            notify_admin(f"❌ Scheduled backup failed:\n{result}")
+            return
+            
+        # Rotate old backups
+        files = sorted(
+            [f for f in os.listdir(BACKUP_DIRECTORY) if f.endswith('.zip')],
+            key=lambda x: os.path.getctime(os.path.join(BACKUP_DIRECTORY, x))
+        )
+        
+        if len(files) > MAX_BACKUPS:
+            for old_file in files[:-MAX_BACKUPS]:
+                try:
+                    os.remove(os.path.join(BACKUP_DIRECTORY, old_file))
+                except Exception as e:
+                    logging.error(f"Failed to remove old backup {old_file}: {e}")
+        
+        notify_admin("✅ Scheduled backup completed successfully")
+    
+    except Exception as e:
+        log_error(e, "scheduled_backup")
+
+def run_scheduler():
+    schedule.every().day.at("00:00").do(scheduled_backup)
+    schedule.every(6).hours.do(check_and_notify_users)
+    
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
+
+# Start scheduler in a separate thread
+scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+scheduler_thread.start()
+
+@bot.message_handler(commands=['feedback'])
+def collect_feedback(message):
+    track_command(message.from_user.id, 'feedback')
+    if not rate_limiter.is_allowed(message.from_user.id):
+        bot.reply_to(message, "⚠️ Please wait a few minutes before submitting another feedback.")
+        return
+        
+    msg = bot.reply_to(message, "📝 Please share your feedback (or /cancel):")
+    bot.register_next_step_handler(msg, process_feedback)
+
+def process_feedback(message):
+    if message.text == '/cancel':
+        bot.reply_to(message, "❌ Feedback cancelled.")
+        return
+        
+    feedback_data = {
+        'user_id': message.from_user.id,
+        'username': message.from_user.username,
+        'feedback': message.text,
+        'timestamp': time.time()
+    }
+    
+    try:
+        save_feedback(feedback_data)
+        notify_admin_feedback(feedback_data)
+        bot.reply_to(message, "✅ Thank you for your feedback! Our team will review it.")
+    except Exception as e:
+        log_error(e, "process_feedback")
+        bot.reply_to(message, "❌ Sorry, there was an error saving your feedback. Please try again later.")
+
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📋 Templates')
+def show_templates(message):
+    track_command(message.from_user.id, 'show_templates')
+    markup = types.InlineKeyboardMarkup()
+    
+    for template_id, template in CONFIG_TEMPLATES.items():
+        btn_text = f"{template['name']} ({template['traffic']}GB, {template['days']} days)"
+        markup.add(types.InlineKeyboardButton(
+            btn_text,
+            callback_data=f"template_{template_id}"
+        ))
+    
+    bot.reply_to(
+        message,
+        "📋 *Available Templates*\nSelect a template to create a new user:",
+        reply_markup=markup,
+        parse_mode="Markdown"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('template_'))
+def handle_template_selection(call):
+    if not is_admin(call.from_user.id):
+        return
+        
+    template_id = call.data.split('_')[1]
+    if template_id not in CONFIG_TEMPLATES:
+        bot.answer_callback_query(call.id, "❌ Invalid template")
+        return
+        
+    template = CONFIG_TEMPLATES[template_id]
+    msg = bot.send_message(
+        call.from_user.id,
+        f"Enter username for new user with template: {template['name']}\n"
+        f"Traffic: {template['traffic']}GB\n"
+        f"Days: {template['days']}"
+    )
+    bot.register_next_step_handler(msg, create_user_from_template, template)
+
+def create_user_from_template(message, template):
+    username = message.text.strip()
+    if not username:
+        bot.reply_to(message, "❌ Invalid username")
+        return
+        
+    try:
+        command = (
+            f"python3 {CLI_PATH} add-user "
+            f"-u {username} "
+            f"-t {template['traffic']} "
+            f"-e {template['days']}"
+        )
+        result = run_cli_command(command)
+        
+        if "Error" in result:
+            bot.reply_to(message, f"❌ Failed to create user:\n{result}")
+            return
+            
+        # Update user_data.json
+        user_data = load_user_data()
+        if str(message.from_user.id) not in user_data:
+            user_data[str(message.from_user.id)] = []
+            
+        user_data[str(message.from_user.id)].append({
+            'username': username,
+            'template': template['name'],
+            'created_at': time.time()
+        })
+        save_user_data(user_data)
+        
+        bot.reply_to(
+            message,
+            f"✅ User created successfully with template {template['name']}\n"
+            f"Username: {username}\n"
+            f"Traffic: {template['traffic']}GB\n"
+            f"Days: {template['days']}"
+        )
+        
+    except Exception as e:
+        log_error(e, f"create_user_from_template: {username}")
+        bot.reply_to(message, "❌ Error creating user. Please try again.")
 
 if __name__ == '__main__':
     bot.polling(none_stop=True)
