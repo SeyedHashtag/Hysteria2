@@ -17,6 +17,12 @@ ADMIN_USER_IDS = json.loads(os.getenv('ADMIN_USER_IDS'))
 CLI_PATH = '/etc/hysteria/core/cli.py'
 BACKUP_DIRECTORY = '/opt/hysbackup'
 USER_DATA_FILE = '/etc/hysteria/user_data.json'  # Changed to server directory
+HELP_MESSAGE_FILE = '/etc/hysteria/help_message.txt'
+DEFAULT_HELP_MESSAGE = """**Welcome to Our VPN Service!**\n\n
+🔹 To view your configurations, click '📱 View My Config'\n
+🔹 To see available plans, click '💰 View Available Plans'\n
+🔹 To download VPN client, click '⬇️ Downloads'\n\n
+For support, contact: @admin_username"""
 diagnose_mode = False
 
 bot = telebot.TeleBot(API_TOKEN)
@@ -31,20 +37,18 @@ def run_cli_command(command):
 
 def create_main_markup():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row('Add User', 'Show User')
-    markup.row('Delete User', 'Server Info')
-    markup.row('Backup Server', 'Sales Stats')
-    markup.row('Toggle Diagnose Mode')
+    markup.row('➕ Add User', '👥 Show User')
+    markup.row('❌ Delete User', '📊 Server Info')
+    markup.row('💾 Backup Server', '📈 Sales Stats')
+    markup.row('📢 Broadcast Message', '📝 Edit Help')
+    markup.row('🔍 Toggle Diagnose Mode')
     return markup
 
 def create_client_markup():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row('View My Config', 'View Available Plans')
-    markup.row('Downloads', 'Support/Help')
+    markup.row('📱 View My Config', '💰 View Available Plans')
+    markup.row('⬇️ Downloads', '❓ Support/Help')
     return markup
-
-def is_admin(user_id):
-    return user_id in ADMIN_USER_IDS
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -55,7 +59,7 @@ def send_welcome(message):
         markup = create_client_markup()
         bot.reply_to(message, "Welcome to our VPN service!", reply_markup=markup)
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Add User')
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '➕ Add User')
 def add_user(message):
     msg = bot.reply_to(message, "Enter username:")
     bot.register_next_step_handler(msg, process_add_user_step1)
@@ -120,7 +124,7 @@ def process_add_user_step3(message, username, traffic_limit):
     except ValueError:
         bot.reply_to(message, "Invalid expiration days. Please enter a number.")
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Show User')
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '👥 Show User')
 def show_user(message):
     msg = bot.reply_to(message, "Enter username:")
     bot.register_next_step_handler(msg, process_show_user)
@@ -236,7 +240,7 @@ def process_show_user(message):
     )
 
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Server Info')
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📊 Server Info')
 def server_info(message):
     command = f"python3 {CLI_PATH} server-info"
     result = run_cli_command(command)
@@ -323,7 +327,7 @@ def process_edit_expiration(message, username):
     except ValueError:
         bot.reply_to(message, "Invalid expiration days. Please enter a number.")
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Delete User')
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '❌ Delete User')
 def delete_user(message):
     msg = bot.reply_to(message, "Enter username:")
     bot.register_next_step_handler(msg, process_delete_user)
@@ -334,7 +338,7 @@ def process_delete_user(message):
     result = run_cli_command(command)
     bot.reply_to(message, result)
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Backup Server')
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '💾 Backup Server')
 def backup_server(message):
     bot.reply_to(message, "Starting backup. This may take a few moments...")
     bot.send_chat_action(message.chat.id, 'typing')
@@ -394,17 +398,17 @@ def handle_inline_query(query):
 
     bot.answer_inline_query(query.id, results, cache_time=0)
 
-@bot.message_handler(func=lambda message: message.text == 'Downloads')
+@bot.message_handler(func=lambda message: message.text == '⬇️ Downloads')
 def show_downloads(message):
     markup = types.InlineKeyboardMarkup()
     
     # Android buttons
     android_play = types.InlineKeyboardButton(
-        "Android (PlayStore)", 
+        "📱 Android (PlayStore)", 
         url="https://play.google.com/store/apps/details?id=app.hiddify.com&hl=en"
     )
     android_github = types.InlineKeyboardButton(
-        "Android (Github)", 
+        "📱 Android (Github)", 
         url="https://github.com/hiddify/hiddify-next/releases/download/v2.0.5/Hiddify-Android-arm64.apk"
     )
     markup.row(android_play)
@@ -412,21 +416,21 @@ def show_downloads(message):
     
     # iOS button
     ios = types.InlineKeyboardButton(
-        "iOS (AppStore)", 
+        "🍎 iOS (AppStore)", 
         url="https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532"
     )
     markup.row(ios)
     
     # Windows button
     windows = types.InlineKeyboardButton(
-        "Windows (Github)", 
+        "💻 Windows (Github)", 
         url="https://github.com/hiddify/hiddify-next/releases/download/v2.0.5/Hiddify-Windows-Setup-x64.exe"
     )
     markup.row(windows)
     
     # Other platforms button
     other_platforms = types.InlineKeyboardButton(
-        "Other platforms (Github)", 
+        "🌐 Other platforms (Github)", 
         url="https://github.com/hiddify/hiddify-app/releases/tag/v2.0.5"
     )
     markup.row(other_platforms)
@@ -439,7 +443,54 @@ def show_downloads(message):
         reply_markup=markup
     )
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Toggle Diagnose Mode')
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📢 Broadcast Message')
+def broadcast_message(message):
+    msg = bot.reply_to(message, "Enter the message to broadcast:")
+    bot.register_next_step_handler(msg, process_broadcast_message)
+
+def process_broadcast_message(message):
+    broadcast_message = message.text
+    for user_id in ADMIN_USER_IDS:
+        bot.send_message(user_id, broadcast_message)
+
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📝 Edit Help')
+def edit_help_message(message):
+    current_message = load_help_message()
+    msg = bot.reply_to(message, 
+                      "Current help message is:\n\n" + current_message + 
+                      "\n\nSend the new help message (or /cancel to keep current):")
+    bot.register_next_step_handler(msg, process_edit_help_message)
+
+def process_edit_help_message(message):
+    if message.text.lower() == '/cancel':
+        bot.reply_to(message, "❌ Help message update cancelled.")
+        return
+    
+    save_help_message(message.text)
+    bot.reply_to(message, "✅ Help message updated successfully!")
+
+def load_help_message():
+    try:
+        if os.path.exists(HELP_MESSAGE_FILE):
+            with open(HELP_MESSAGE_FILE, 'r') as f:
+                return f.read()
+    except Exception as e:
+        print(f"Error loading help message: {str(e)}")
+    return DEFAULT_HELP_MESSAGE
+
+def save_help_message(message):
+    try:
+        with open(HELP_MESSAGE_FILE, 'w') as f:
+            f.write(message)
+    except Exception as e:
+        print(f"Error saving help message: {str(e)}")
+
+@bot.message_handler(func=lambda message: message.text == '❓ Support/Help')
+def support_help(message):
+    help_text = load_help_message()
+    bot.reply_to(message, help_text, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '🔍 Toggle Diagnose Mode')
 def toggle_diagnose_mode(message):
     global diagnose_mode
     diagnose_mode = not diagnose_mode
@@ -464,7 +515,7 @@ def save_user_data(data):
     except Exception as e:
         print(f"Error saving user data: {str(e)}")
 
-@bot.message_handler(func=lambda message: message.text == 'View My Config')
+@bot.message_handler(func=lambda message: message.text == '📱 View My Config')
 def view_my_config(message):
     user_id = str(message.from_user.id)
     user_data = load_user_data()
@@ -553,7 +604,7 @@ def view_my_config(message):
             print(f"Error sending config {username}: {str(e)}")
             continue
 
-@bot.message_handler(func=lambda message: message.text == 'View Available Plans')
+@bot.message_handler(func=lambda message: message.text == '💰 View Available Plans')
 def view_available_plans(message):
     plans = [
         "🚀 Basic Plan\n- 30GB Traffic\n- 30 Days\n- Price: $1.8",
@@ -691,7 +742,7 @@ def generate_stats(user_data, start_time, end_time=None, diagnose_only=False):
 
     return total_configs, total_profit, plan_counts
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == 'Sales Stats')
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📈 Sales Stats')
 def show_sales_stats(message):
     user_data = load_user_data()
     current_time = time.time()
@@ -737,19 +788,8 @@ def show_sales_stats(message):
 
     bot.reply_to(message, stats_message, parse_mode="Markdown")
 
-@bot.message_handler(func=lambda message: message.text == 'Support/Help')
-def support_help(message):
-    help_text = (
-        "**Welcome to Our VPN Service!**\n\n"
-        "Here's how to use the bot:\n\n"
-        "📱 **Commands:**\n"
-        "- View My Config: Check your active configuration\n"
-        "- View Available Plans: See our pricing plans\n"
-        "- Support/Help: Show this help message\n\n"
-        "🔧 **Need Help?**\n"
-        "Contact our support: @YourSupportUsername"
-    )
-    bot.reply_to(message, help_text, parse_mode="Markdown")
+def is_admin(user_id):
+    return user_id in ADMIN_USER_IDS
 
 if __name__ == '__main__':
     bot.polling(none_stop=True)
