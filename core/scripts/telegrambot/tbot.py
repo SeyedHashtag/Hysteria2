@@ -9,8 +9,7 @@ import re
 from dotenv import load_dotenv
 from telebot import types
 import time
-from crmus import CryptomusClient, CryptomusConfig, PaymentStatus
-import uuid
+from crmus import CryptomusHandler
 
 load_dotenv()
 
@@ -29,6 +28,9 @@ diagnose_mode = False
 
 bot = telebot.TeleBot(API_TOKEN)
 
+# Initialize Cryptomus handler
+cryptomus = CryptomusHandler()
+
 def run_cli_command(command):
     try:
         args = shlex.split(command)
@@ -43,8 +45,7 @@ def create_main_markup():
     markup.row('❌ Delete User', '📊 Server Info')
     markup.row('💾 Backup Server', '📈 Sales Stats')
     markup.row('📢 Broadcast Message', '📝 Edit Help')
-    markup.row('🔍 Toggle Diagnose Mode')
-    markup.row('⚙️ Cryptomus Config')  # Added Cryptomus config button
+    markup.row('🔍 Toggle Diagnose Mode', '⚙️ Payment Settings')
     return markup
 
 def create_client_markup():
@@ -581,6 +582,111 @@ def toggle_diagnose_mode(message):
     status = "ON" if diagnose_mode else "OFF"
     bot.reply_to(message, f"Diagnose mode is now {status}.")
 
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '⚙️ Payment Settings')
+def payment_settings(message):
+    markup = types.InlineKeyboardMarkup()
+    setup_btn = types.InlineKeyboardButton("🔑 Setup Cryptomus", callback_data="setup_cryptomus")
+    status_btn = types.InlineKeyboardButton("📊 Payment Status", callback_data="payment_status")
+    markup.row(setup_btn)
+    markup.row(status_btn)
+    
+    bot.reply_to(message, "Select a payment setting option:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "setup_cryptomus")
+def setup_cryptomus(call):
+    msg = bot.send_message(
+        call.message.chat.id,
+        "Please enter your Cryptomus Merchant ID:"
+    )
+    bot.register_next_step_handler(msg, process_merchant_id)
+
+def process_merchant_id(message):
+    merchant_id = message.text.strip()
+    if not merchant_id:
+        bot.reply_to(message, "❌ Invalid Merchant ID. Please try again.")
+        return
+    
+    # Store merchant ID temporarily
+    bot.send_message(
+        message.chat.id,
+        "Now enter your Cryptomus Payment API Key:"
+    )
+    bot.register_next_step_handler(message, lambda m: process_payment_key(m, merchant_id))
+
+def process_payment_key(message, merchant_id):
+    payment_key = message.text.strip()
+    if not payment_key:
+        bot.reply_to(message, "❌ Invalid Payment API Key. Please try again.")
+        return
+    
+    # Save credentials
+    if cryptomus.save_credentials(merchant_id, payment_key):
+        bot.reply_to(message, "✅ Cryptomus credentials saved successfully!")
+    else:
+        bot.reply_to(message, "❌ Failed to save Cryptomus credentials. Please try again.")
+
+@bot.callback_query_handler(func=lambda call: call.data == "payment_status")
+def check_payment_status(call):
+    if not cryptomus.is_configured():
+        bot.answer_callback_query(
+            call.id,
+            "⚠️ Cryptomus is not configured. Please setup credentials first.",
+            show_alert=True
+        )
+        return
+    
+    bot.answer_callback_query(call.id)
+    bot.reply_to(
+        call.message,
+        "✅ Cryptomus is configured and ready to accept payments!"
+    )
+
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📈 Sales Stats')
+def show_sales_stats(message):
+    user_data = load_user_data()
+    current_time = time.time()
+    
+    day_start = current_time - (24 * 60 * 60)  # 24 hours ago
+    week_start = current_time - (7 * 24 * 60 * 60)  # 7 days ago
+
+    day_configs, day_profit, day_plans = generate_stats(user_data, day_start)
+    week_configs, week_profit, week_plans = generate_stats(user_data, week_start)
+
+    day_test_configs, day_test_profit, day_test_plans = generate_stats(user_data, day_start, diagnose_only=True)
+    week_test_configs, week_test_profit, week_test_plans = generate_stats(user_data, week_start, diagnose_only=True)
+
+    stats_message = (
+        "📊 **Sales Statistics**\n\n"
+        "**Today's Sales:**\n"
+        f"Total Configs: {day_configs}\n"
+        f"Total Profit: ${day_profit:.2f}\n"
+        f"Basic Plans: {day_plans['basic']}\n"
+        f"Premium Plans: {day_plans['premium']}\n"
+        f"Ultimate Plans: {day_plans['ultimate']}\n\n"
+        
+        "**Weekly Sales:**\n"
+        f"Total Configs: {week_configs}\n"
+        f"Total Profit: ${week_profit:.2f}\n"
+        f"Basic Plans: {week_plans['basic']}\n"
+        f"Premium Plans: {week_plans['premium']}\n"
+        f"Ultimate Plans: {week_plans['ultimate']}\n\n"
+        
+        "🧪 **Diagnose Mode Stats**\n\n"
+        "**Today's Test Configs:**\n"
+        f"Total Test Configs: {day_test_configs}\n"
+        f"Basic Plans: {day_test_plans['basic']}\n"
+        f"Premium Plans: {day_test_plans['premium']}\n"
+        f"Ultimate Plans: {day_test_plans['ultimate']}\n\n"
+        
+        "**Weekly Test Configs:**\n"
+        f"Total Test Configs: {week_test_configs}\n"
+        f"Basic Plans: {week_test_plans['basic']}\n"
+        f"Premium Plans: {week_test_plans['premium']}\n"
+        f"Ultimate Plans: {week_test_plans['ultimate']}"
+    )
+
+    bot.reply_to(message, stats_message, parse_mode="Markdown")
+
 def load_user_data():
     try:
         if os.path.exists(USER_DATA_FILE):
@@ -688,291 +794,101 @@ def view_my_config(message):
             print(f"Error sending config {username}: {str(e)}")
             continue
 
-PLANS = {
-    "basic": {
-        "name": "Basic Plan",
-        "price": 1.8,
-        "duration": 30,
-        "traffic": 30,
-        "description": "🚀 Basic Plan\n• 30 Days\n• 30GB Traffic\n• Multiple Devices\n• 24/7 Support"
-    },
-    "premium": {
-        "name": "Premium Plan",
-        "price": 3,
-        "duration": 30,
-        "traffic": 60,
-        "description": "⭐ Premium Plan\n• 30 Days\n• 60GB Traffic\n• Multiple Devices\n• Priority Support"
-    },
-    "ultimate": {
-        "name": "Ultimate Plan",
-        "price": 4.2,
-        "duration": 30,
-        "traffic": 100,
-        "description": "💎 Ultimate Plan\n• 30 Days\n• 100GB Traffic\n• Multiple Devices\n• Premium Support"
-    }
-}
-
 @bot.message_handler(func=lambda message: message.text == '💰 View Available Plans')
 def view_available_plans(message):
-    plans_text = [
+    plans = [
         "🚀 Basic Plan\n- 30GB Traffic\n- 30 Days\n- Price: $1.8",
         "⭐ Premium Plan\n- 60GB Traffic\n- 30 Days\n- Price: $3",
         "💎 Ultimate Plan\n- 100GB Traffic\n- 30 Days\n- Price: $4.2"
     ]
     
     markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("Purchase Basic Plan (30GB)", callback_data="purchase_plan:basic:30"),
+        types.InlineKeyboardButton("Purchase Premium Plan (60GB)", callback_data="purchase_plan:premium:60"),
+        types.InlineKeyboardButton("Purchase Ultimate Plan (100GB)", callback_data="purchase_plan:ultimate:100")
+    )
     
-    if diagnose_mode:
-        # In diagnose mode, keep the original test purchase buttons
-        markup.add(
-            types.InlineKeyboardButton("Purchase Basic Plan (30GB)", callback_data="purchase_plan:basic:30"),
-            types.InlineKeyboardButton("Purchase Premium Plan (60GB)", callback_data="purchase_plan:premium:60"),
-            types.InlineKeyboardButton("Purchase Ultimate Plan (100GB)", callback_data="purchase_plan:ultimate:100")
-        )
-    else:
-        # In normal mode, show real payment buttons if Cryptomus is configured
-        if CryptomusConfig.is_configured():
-            markup.add(
-                types.InlineKeyboardButton("Purchase Basic Plan (30GB)", callback_data="plan:basic"),
-                types.InlineKeyboardButton("Purchase Premium Plan (60GB)", callback_data="plan:premium"),
-                types.InlineKeyboardButton("Purchase Ultimate Plan (100GB)", callback_data="plan:ultimate")
-            )
-    
-    response = "**Available Plans:**\n\n" + "\n\n".join(plans_text)
+    response = "**Available Plans:**\n\n" + "\n\n".join(plans)
     if not diagnose_mode:
-        if not CryptomusConfig.is_configured():
-            response += "\n\n_Payment system is currently unavailable!_"
+        response += "\n\n_Payment system coming soon!_"
     else:
         response += "\n\n_⚠️ Diagnose Mode Active: Test purchases available_"
     
     bot.reply_to(message, response, reply_markup=markup, parse_mode="Markdown")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('plan:'))
-def handle_plan_selection(call):
-    _, plan_id = call.data.split(':')
-    plan = PLANS[plan_id]
-    
-    markup = types.InlineKeyboardMarkup()
-    purchase = types.InlineKeyboardButton(
-        f"💳 Purchase ${plan['price']}", 
-        callback_data=f"purchase:{plan_id}"
-    )
-    back = types.InlineKeyboardButton(
-        "🔙 Back to Plans",
-        callback_data="back_to_plans"
-    )
-    markup.row(purchase)
-    markup.row(back)
-    
-    bot.edit_message_text(
-        f"*{plan['name']}*\n\n"
-        f"{plan['description']}\n\n"
-        f"💵 Price: ${plan['price']}\n",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=markup,
-        parse_mode="Markdown"
-    )
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('purchase:'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith('purchase_plan:'))
 def handle_purchase(call):
-    _, plan_id = call.data.split(':')
-    plan = PLANS[plan_id]
+    if not diagnose_mode:
+        bot.answer_callback_query(call.id, "Payment system is not available yet!")
+        return
+
+    _, plan_type, gb = call.data.split(':')
+    user_id = str(call.from_user.id)
+    gb = int(gb)
     
-    try:
-        client = CryptomusClient()
+    # Generate username with numeric ID and timestamp
+    current_time = time.strftime('%Y%m%d%H%M%S')
+    username = f"{user_id}d{current_time}"
+    if diagnose_mode:
+        username = f"{username}d"
+    
+    command = f"python3 {CLI_PATH} add-user -u {username} -t {gb} -e 30"
+    result = run_cli_command(command)
+    
+    if "Error" in result:
+        bot.answer_callback_query(call.id, "Failed to create configuration")
+        bot.reply_to(call.message, f"Error creating configuration: {result}")
+        return
+
+    uri_command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 4 -s"
+    uri_result = run_cli_command(uri_command)
+    
+    if "Error" not in uri_result:
+        qr_result = uri_result.replace("IPv4:\n", "").strip()
+        if "Warning: IP4 or IP6" in qr_result:
+            qr_result = qr_result.split('\n')[-1].strip()
         
-        # Generate unique order ID with timestamp
-        current_time = time.strftime('%Y%m%d%H%M%S')
-        order_id = f"{call.from_user.id}d{current_time}"
-        if diagnose_mode:
-            order_id = f"{order_id}d"
+        user_data = load_user_data()
+        new_config = {
+            'username': username,
+            'plan': plan_type,
+            'purchase_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'gb': gb,
+            'days': 30
+        }
+
+        if user_id not in user_data:
+            user_data[user_id] = []
+        elif not isinstance(user_data[user_id], list):
+            user_data[user_id] = [user_data[user_id]]
         
-        # Create payment with only amount
-        payment = client.create_payment(
-            amount=plan['price'],
-            currency="USD",
-            order_id=order_id,
-            additional_data={
-                "user_id": call.from_user.id,
-                "plan_id": plan_id,
-                "telegram_username": call.from_user.username,
-                "traffic": plan['traffic'],
-                "duration": plan['duration']
-            }
+        user_data[user_id].append(new_config)
+        save_user_data(user_data)
+
+        qr = qrcode.make(qr_result)
+        bio = io.BytesIO()
+        qr.save(bio, 'PNG')
+        bio.seek(0)
+        
+        mode_text = "(Diagnose Mode)" if diagnose_mode else ""
+        caption = (
+            f"**Configuration Created! {mode_text}**\n\n"
+            f"Plan: {plan_type.title()} ({gb}GB)\n"
+            f"Username: {username}\n"
+            f"Duration: 30 days\n\n"
+            f"**Connection URI:**\n`{qr_result}`"
         )
         
-        result = payment.get("result", {})
-        payment_url = result.get("url")
-        
-        if not payment_url:
-            raise ValueError("Failed to get payment URL")
-        
-        markup = types.InlineKeyboardMarkup()
-        pay_button = types.InlineKeyboardButton(
-            "🔗 Pay Now",
-            url=payment_url
-        )
-        check_button = types.InlineKeyboardButton(
-            "✅ Check Payment",
-            callback_data=f"check:{order_id}"
-        )
-        cancel_button = types.InlineKeyboardButton(
-            "❌ Cancel",
-            callback_data="back_to_plans"
-        )
-        markup.row(pay_button)
-        markup.row(check_button)
-        markup.row(cancel_button)
-        
-        payment_text = (
-            f"🛒 *Order Summary*\n\n"
-            f"Plan: {plan['name']}\n"
-            f"Traffic: {plan['traffic']}GB\n"
-            f"Duration: {plan['duration']} days\n"
-            f"Price: ${plan['price']}\n"
-            f"Order ID: `{order_id}`\n\n"
-            f"1. Click 'Pay Now' to proceed with payment\n"
-            f"2. Complete the payment\n"
-            f"3. Click 'Check Payment' to verify\n"
-            f"4. Your plan will be activated automatically"
-        )
-        
-        bot.edit_message_text(
-            payment_text,
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        bot.send_photo(
             call.message.chat.id,
-            call.message.message_id,
-            reply_markup=markup,
+            bio,
+            caption=caption,
             parse_mode="Markdown"
         )
-        
-    except Exception as e:
-        bot.answer_callback_query(
-            call.id,
-            "❌ Failed to create payment. Please try again or contact support."
-        )
-        print(f"Payment creation error: {str(e)}")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('check:'))
-def check_payment_status(call):
-    _, order_id = call.data.split(':')
-    
-    try:
-        client = CryptomusClient()
-        status = client.get_payment_status(order_id=order_id)
-        payment_info = client.get_payment(order_id=order_id)
-        result = payment_info.get("result", {})
-        
-        if status == PaymentStatus.PAID:
-            # Extract plan info from payment data
-            additional_data = result.get("additional_data", {})
-            traffic = additional_data.get("traffic")
-            duration = additional_data.get("duration", 30)
-            
-            # Generate username with numeric ID and timestamp
-            current_time = time.strftime('%Y%m%d%H%M%S')
-            username = f"{call.from_user.id}d{current_time}"
-            if diagnose_mode:
-                username = f"{username}d"
-            
-            try:
-                # Add user configuration
-                command = f"python3 {CLI_PATH} add-user -u {username} -t {traffic} -e {duration}"
-                result = run_cli_command(command)
-                
-                if "Error" in result:
-                    raise Exception(result)
-                
-                # Get URI for the config
-                uri_command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 4 -s"
-                uri_result = run_cli_command(uri_command)
-                
-                if "Error" not in uri_result:
-                    qr_result = uri_result.replace("IPv4:\n", "").strip()
-                    if "Warning: IP4 or IP6" in qr_result:
-                        qr_result = qr_result.split('\n')[-1].strip()
-                    
-                    # Save user data
-                    user_data = load_user_data()
-                    new_config = {
-                        'username': username,
-                        'plan': additional_data.get('plan_id'),
-                        'purchase_date': time.strftime('%Y-%m-%d %H:%M:%S'),
-                        'gb': traffic,
-                        'days': duration
-                    }
-                    
-                    if str(call.from_user.id) not in user_data:
-                        user_data[str(call.from_user.id)] = []
-                    elif not isinstance(user_data[str(call.from_user.id)], list):
-                        user_data[str(call.from_user.id)] = [user_data[str(call.from_user.id)]]
-                    
-                    user_data[str(call.from_user.id)].append(new_config)
-                    save_user_data(user_data)
-                    
-                    # Generate QR code
-                    qr = qrcode.make(qr_result)
-                    bio = io.BytesIO()
-                    qr.save(bio, 'PNG')
-                    bio.seek(0)
-                    
-                    # Delete the payment message and send the config
-                    bot.delete_message(call.message.chat.id, call.message.message_id)
-                    
-                    mode_text = "(Diagnose Mode)" if diagnose_mode else ""
-                    caption = (
-                        f"**Configuration Created! {mode_text}**\n\n"
-                        f"Username: {username}\n"
-                        f"Traffic: {traffic}GB\n"
-                        f"Duration: {duration} days\n\n"
-                        f"**Connection URI:**\n`{qr_result}`"
-                    )
-                    
-                    bot.send_photo(
-                        call.message.chat.id,
-                        bio,
-                        caption=caption,
-                        parse_mode="Markdown"
-                    )
-                else:
-                    raise Exception("Failed to generate configuration URI")
-                
-            except Exception as e:
-                bot.edit_message_text(
-                    "✅ Payment received but failed to activate plan.\n"
-                    "Please contact support with your Order ID:\n"
-                    f"`{order_id}`",
-                    call.message.chat.id,
-                    call.message.message_id,
-                    parse_mode="Markdown"
-                )
-                print(f"Config creation error: {str(e)}")
-                
-        elif status == PaymentStatus.PROCESS:
-            bot.answer_callback_query(
-                call.id,
-                "⏳ Payment is being processed. Please wait and check again."
-            )
-            
-        elif status == PaymentStatus.EXPIRED:
-            bot.edit_message_text(
-                "❌ Payment expired. Please create a new order.",
-                call.message.chat.id,
-                call.message.message_id
-            )
-            
-        else:
-            bot.answer_callback_query(
-                call.id,
-                f"Payment status: {status}. Please complete the payment."
-            )
-            
-    except Exception as e:
-        bot.answer_callback_query(
-            call.id,
-            "❌ Failed to check payment status. Please try again."
-        )
-        print(f"Payment check error: {str(e)}")
+    else:
+        bot.reply_to(call.message, "Failed to generate configuration URI. Please contact support.")
 
 def generate_stats(user_data, start_time, end_time=None, diagnose_only=False):
     total_profit = 0
@@ -1016,155 +932,8 @@ def generate_stats(user_data, start_time, end_time=None, diagnose_only=False):
 
     return total_configs, total_profit, plan_counts
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📈 Sales Stats')
-def show_sales_stats(message):
-    user_data = load_user_data()
-    current_time = time.time()
-    
-    day_start = current_time - (24 * 60 * 60)  # 24 hours ago
-    week_start = current_time - (7 * 24 * 60 * 60)  # 7 days ago
-
-    day_configs, day_profit, day_plans = generate_stats(user_data, day_start)
-    week_configs, week_profit, week_plans = generate_stats(user_data, week_start)
-
-    day_test_configs, day_test_profit, day_test_plans = generate_stats(user_data, day_start, diagnose_only=True)
-    week_test_configs, week_test_profit, week_test_plans = generate_stats(user_data, week_start, diagnose_only=True)
-
-    stats_message = (
-        "📊 **Sales Statistics**\n\n"
-        "**Today's Sales:**\n"
-        f"Total Configs: {day_configs}\n"
-        f"Total Profit: ${day_profit:.2f}\n"
-        f"Basic Plans: {day_plans['basic']}\n"
-        f"Premium Plans: {day_plans['premium']}\n"
-        f"Ultimate Plans: {day_plans['ultimate']}\n\n"
-        
-        "**Weekly Sales:**\n"
-        f"Total Configs: {week_configs}\n"
-        f"Total Profit: ${week_profit:.2f}\n"
-        f"Basic Plans: {week_plans['basic']}\n"
-        f"Premium Plans: {week_plans['premium']}\n"
-        f"Ultimate Plans: {week_plans['ultimate']}\n\n"
-        
-        "🧪 **Diagnose Mode Stats**\n\n"
-        "**Today's Test Configs:**\n"
-        f"Total Test Configs: {day_test_configs}\n"
-        f"Basic Plans: {day_test_plans['basic']}\n"
-        f"Premium Plans: {day_test_plans['premium']}\n"
-        f"Ultimate Plans: {day_test_plans['ultimate']}\n\n"
-        
-        "**Weekly Test Configs:**\n"
-        f"Total Test Configs: {week_test_configs}\n"
-        f"Basic Plans: {week_test_plans['basic']}\n"
-        f"Premium Plans: {week_test_plans['premium']}\n"
-        f"Ultimate Plans: {week_test_plans['ultimate']}"
-    )
-
-    bot.reply_to(message, stats_message, parse_mode="Markdown")
-
 def is_admin(user_id):
     return user_id in ADMIN_USER_IDS
-
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '⚙️ Cryptomus Config')
-def cryptomus_config(message):
-    markup = types.InlineKeyboardMarkup()
-    view_config = types.InlineKeyboardButton("👀 View Config", callback_data="crmus:view")
-    update_config = types.InlineKeyboardButton("🔄 Update Config", callback_data="crmus:update")
-    toggle_test = types.InlineKeyboardButton("🧪 Toggle Test Mode", callback_data="crmus:test")
-    markup.row(view_config)
-    markup.row(update_config)
-    markup.row(toggle_test)
-    
-    bot.reply_to(message, "Cryptomus Payment Configuration:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('crmus:'))
-def handle_cryptomus_config(call):
-    _, action = call.data.split(':')
-    
-    if action == "view":
-        uuid, key, test_mode = CryptomusConfig.get_credentials()
-        status = "configured ✅" if CryptomusConfig.is_configured() else "not configured ❌"
-        key_preview = f"{key[:4]}...{key[-4:]}" if key else "not set"
-        
-        config_text = (
-            f"*Cryptomus Configuration*\n\n"
-            f"Status: {status}\n"
-            f"Test Mode: {'enabled 🧪' if test_mode else 'disabled 🚀'}\n"
-            f"Merchant UUID: `{uuid or 'not set'}`\n"
-            f"Payment Key: `{key_preview}`"
-        )
-        bot.edit_message_text(
-            config_text,
-            call.message.chat.id,
-            call.message.message_id,
-            parse_mode="Markdown"
-        )
-    
-    elif action == "update":
-        msg = bot.edit_message_text(
-            "Please enter your Cryptomus Merchant UUID:",
-            call.message.chat.id,
-            call.message.message_id
-        )
-        bot.register_next_step_handler(msg, process_merchant_uuid)
-    
-    elif action == "test":
-        _, _, current_test_mode = CryptomusConfig.get_credentials()
-        client = CryptomusClient()
-        client.update_credentials(
-            client.merchant_uuid,
-            client.payment_key,
-            not current_test_mode
-        )
-        
-        bot.answer_callback_query(
-            call.id,
-            f"Test mode {'enabled 🧪' if not current_test_mode else 'disabled 🚀'}"
-        )
-        
-        # Refresh the config view
-        handle_cryptomus_config(types.CallbackQuery(
-            id="refresh",
-            from_user=call.from_user,
-            data="crmus:view",
-            chat_instance=call.chat_instance,
-            message=call.message
-        ))
-
-def process_merchant_uuid(message):
-    if message.text == '/cancel':
-        bot.reply_to(message, "Configuration cancelled.")
-        return
-        
-    merchant_uuid = message.text.strip()
-    msg = bot.reply_to(message, "Now enter your Cryptomus Payment Key:")
-    bot.register_next_step_handler(msg, process_payment_key, merchant_uuid)
-
-def process_payment_key(message, merchant_uuid):
-    if message.text == '/cancel':
-        bot.reply_to(message, "Configuration cancelled.")
-        return
-        
-    payment_key = message.text.strip()
-    
-    try:
-        client = CryptomusClient()
-        client.update_credentials(merchant_uuid, payment_key)
-        
-        # Test the configuration
-        client.get_payment_history(limit=1)
-        
-        bot.reply_to(
-            message,
-            "✅ Cryptomus configuration updated and verified successfully!\n"
-            "Test mode is disabled by default. Use the config menu to enable it if needed."
-        )
-    except Exception as e:
-        bot.reply_to(
-            message,
-            f"❌ Failed to configure Cryptomus: {str(e)}\n"
-            "Please check your credentials and try again."
-        )
 
 if __name__ == '__main__':
     bot.polling(none_stop=True)
