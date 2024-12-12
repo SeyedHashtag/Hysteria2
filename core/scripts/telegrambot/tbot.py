@@ -121,7 +121,7 @@ TRANSLATIONS = {
         'config_details': 'نام کاربری: {}\nپلن: {}\nترافیک: {:.2f}GB/{:.2f}GB\nانقضا در: {} روز\n',
         'basic_plan': '🚀 پلن پایه\n- ترافیک 30 گیگابایت\n- 30 روز\n- قیمت: ${} دلار',
         'premium_plan': '⚡️ پلن ویژه\n- ترافیک 100 گیگابایت\n- 30 روز\n- قیمت: ${} دلار',
-        'ultimate_plan': '💎 پلن نامحدود\n- ترافیک 200 گیگابایت\n- 30 روز\n- قیمت: ${} دلار',
+        'ultimate_plan': '💎 پلن فوق العاده\n- ترافیک 200 گیگابایت\n- 30 روز\n- قیمت: ${} دلار',
         'select_payment': 'روش پرداخت را انتخاب کنید:',
         'crypto_pay': '💎 پرداخت با ارز دیجیتال',
         'purchase_success': 'پرداخت موفق! پیکربندی شما به زودی ایجاد خواهد شد.',
@@ -668,7 +668,7 @@ def process_show_user(message):
     bot.send_chat_action(message.chat.id, 'typing')
     command = f"python3 {CLI_PATH} list-users"
     result = run_cli_command(command)
-
+    
     try:
         users = json.loads(result)
         existing_users = {user.lower(): user for user in users.keys()}
@@ -806,6 +806,7 @@ def handle_edit_callback(call):
     elif action == 'ipv6_uri':
         command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 6"
         result = run_cli_command(command)
+        
         if "Error" in result or "Invalid" in result:
             bot.send_message(call.message.chat.id, result)
             return
@@ -1254,32 +1255,28 @@ def view_available_plans(message):
     """Handle view available plans command."""
     settings = load_payment_settings()
     plans = [
-        f"{get_text(message.from_user.id, 'basic_plan')}\n- {get_text(message.from_user.id, 'basic_plan').split('-')[1]} - Price: ${settings['prices']['basic']}",
-        f"{get_text(message.from_user.id, 'premium_plan')}\n- {get_text(message.from_user.id, 'premium_plan').split('-')[1]} - Price: ${settings['prices']['premium']}",
-        f"{get_text(message.from_user.id, 'ultimate_plan')}\n- {get_text(message.from_user.id, 'ultimate_plan').split('-')[1]} - Price: ${settings['prices']['ultimate']}"
+        get_text(message.from_user.id, 'basic_plan').format(settings['prices']['basic']),
+        get_text(message.from_user.id, 'premium_plan').format(settings['prices']['premium']),
+        get_text(message.from_user.id, 'ultimate_plan').format(settings['prices']['ultimate'])
     ]
     
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
         types.InlineKeyboardButton(
-            f"{get_text(message.from_user.id, 'basic_plan')}\n- {get_text(message.from_user.id, 'basic_plan').split('-')[1]} - Price: ${settings['prices']['basic']}", 
+            "🚀 Basic Plan", 
             callback_data="purchase_plan:basic:30"
         ),
         types.InlineKeyboardButton(
-            f"{get_text(message.from_user.id, 'premium_plan')}\n- {get_text(message.from_user.id, 'premium_plan').split('-')[1]} - Price: ${settings['prices']['premium']}", 
-            callback_data="purchase_plan:premium:60"
+            "⚡️ Premium Plan", 
+            callback_data="purchase_plan:premium:100"
         ),
         types.InlineKeyboardButton(
-            f"{get_text(message.from_user.id, 'ultimate_plan')}\n- {get_text(message.from_user.id, 'ultimate_plan').split('-')[1]} - Price: ${settings['prices']['ultimate']}", 
-            callback_data="purchase_plan:ultimate:100"
+            "💎 Ultimate Plan", 
+            callback_data="purchase_plan:ultimate:200"
         )
     )
     
-    response = "**Available Plans:**\n\n" + "\n\n".join(plans)
-    if not settings['enabled'] and not diagnose_mode:
-        response += "\n\n_Payment system is currently disabled_"
-    elif diagnose_mode:
-        response += "\n\n_⚠️ Diagnose Mode Active: Test purchases available_"
+    response = "\n\n".join(plans)
     
     bot.reply_to(message, response, reply_markup=markup, parse_mode="Markdown")
 
