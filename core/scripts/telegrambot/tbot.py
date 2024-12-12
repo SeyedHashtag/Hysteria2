@@ -9,9 +9,6 @@ import re
 from dotenv import load_dotenv
 from telebot import types
 import time
-from payment import PaymentManager
-import threading
-from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -21,7 +18,6 @@ CLI_PATH = '/etc/hysteria/core/cli.py'
 BACKUP_DIRECTORY = '/opt/hysbackup'
 USER_DATA_FILE = '/etc/hysteria/user_data.json'  # Changed to server directory
 HELP_MESSAGE_FILE = '/etc/hysteria/help_message.txt'
-CRYPTOMUS_CONFIG_FILE = '/etc/hysteria/cryptomus_config.json'
 DEFAULT_HELP_MESSAGE = """**Welcome to Our VPN Service!**\n\n
 🔹 To view your configurations, click '📱 View My Config'\n
 🔹 To see available plans, click '💰 View Available Plans'\n
@@ -29,13 +25,9 @@ DEFAULT_HELP_MESSAGE = """**Welcome to Our VPN Service!**\n\n
 For support, contact: @admin_username"""
 diagnose_mode = False
 
-payment_manager = PaymentManager(CRYPTOMUS_CONFIG_FILE)
-
-PLANS = {
-    'basic': {'name': '🔹 Basic', 'price': 1.8, 'description': '30 days - Basic speed'},
-    'premium': {'name': '🔸 Premium', 'price': 3.0, 'description': '30 days - Premium speed'},
-    'ultimate': {'name': '💎 Ultimate', 'price': 4.2, 'description': '30 days - Ultimate speed'}
-}
+# Add environment variables for Cryptomus
+CRYPTOMUS_API_KEY = os.getenv('CRYPTOMUS_API_KEY')
+CRYPTOMUS_SECRET = os.getenv('CRYPTOMUS_SECRET')
 
 bot = telebot.TeleBot(API_TOKEN)
 
@@ -53,7 +45,8 @@ def create_main_markup():
     markup.row('❌ Delete User', '📊 Server Info')
     markup.row('💾 Backup Server', '📈 Sales Stats')
     markup.row('📢 Broadcast Message', '📝 Edit Help')
-    markup.row('💳 Payment Settings', '🔍 Toggle Diagnose Mode')
+    markup.row('🔍 Toggle Diagnose Mode')
+    markup.row('💳 Setup Cryptomus')  # Add Cryptomus setup button
     return markup
 
 def create_client_markup():
@@ -590,6 +583,23 @@ def toggle_diagnose_mode(message):
     status = "ON" if diagnose_mode else "OFF"
     bot.reply_to(message, f"Diagnose mode is now {status}.")
 
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '💳 Setup Cryptomus')
+def setup_cryptomus(message):
+    msg = bot.reply_to(message, "Enter Cryptomus API Key:")
+    bot.register_next_step_handler(msg, process_cryptomus_api_key)
+
+def process_cryptomus_api_key(message):
+    api_key = message.text.strip()
+    msg = bot.reply_to(message, "Enter Cryptomus Secret:")
+    bot.register_next_step_handler(msg, process_cryptomus_secret, api_key)
+
+def process_cryptomus_secret(message, api_key):
+    secret = message.text.strip()
+    # Update environment variables
+    update_env_file('CRYPTOMUS_API_KEY', api_key)
+    update_env_file('CRYPTOMUS_SECRET', secret)
+    bot.reply_to(message, "✅ Cryptomus credentials updated successfully!")
+
 def load_user_data():
     try:
         if os.path.exists(USER_DATA_FILE):
@@ -698,361 +708,142 @@ def view_my_config(message):
             continue
 
 @bot.message_handler(func=lambda message: message.text == '💰 View Available Plans')
-def show_plans(message):
-    markup = types.InlineKeyboardMarkup()
+def view_available_plans(message):
+    plans = [
+        "🚀 Basic Plan\n- 30GB Traffic\n- 30 Days\n- Price: $1.8",
+        "⭐ Premium Plan\n- 60GB Traffic\n- 30 Days\n- Price: $3",
+        "💎 Ultimate Plan\n- 100GB Traffic\n- 30 Days\n- Price: $4.2"
+    ]
     
-    for plan_id, plan in PLANS.items():
-        button = types.InlineKeyboardButton(
-            f"{plan['name']} - ${plan['price']} ({plan['description']})",
-            callback_data=f"buy:{plan_id}"
-        )
-        markup.row(button)
-    
-    bot.reply_to(
-        message,
-        "🌟 *Available Plans*\n\n"
-        "Choose a plan to purchase:\n\n"
-        "Note: All plans include unlimited traffic.",
-        reply_markup=markup,
-        parse_mode="Markdown"
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("Purchase Basic Plan (30GB)", callback_data="purchase_plan:basic:30"),
+        types.InlineKeyboardButton("Purchase Premium Plan (60GB)", callback_data="purchase_plan:premium:60"),
+        types.InlineKeyboardButton("Purchase Ultimate Plan (100GB)", callback_data="purchase_plan:ultimate:100")
     )
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('buy:'))
-def handle_buy(call):
-    _, plan_id = call.data.split(':')
-    plan = PLANS.get(plan_id)
     
-    if not plan:
-        bot.answer_callback_query(call.id, "Invalid plan selected.", show_alert=True)
+    response = "**Available Plans:**\n\n" + "\n\n".join(plans)
+    if not diagnose_mode:
+        response += "\n\n_Payment system coming soon!_"
+    else:
+        response += "\n\n_⚠️ Diagnose Mode Active: Test purchases available_"
+    
+    bot.reply_to(message, response, reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('purchase_plan:'))
+def handle_purchase(call):
+    if not diagnose_mode:
+        bot.answer_callback_query(call.id, "Payment system is not available yet!")
         return
-        
-    # If diagnose mode is on, bypass payment
+
+    _, plan_type, gb = call.data.split(':')
+    user_id = str(call.from_user.id)
+    gb = int(gb)
+    
+    # Generate username with numeric ID and timestamp
+    current_time = time.strftime('%Y%m%d%H%M%S')
+    username = f"{user_id}d{current_time}"
     if diagnose_mode:
-        try:
-            result = create_user_config(call.from_user.id, plan_id, is_diagnose=True)
-            if result.get('success'):
-                config = result['config']
-                
-                # Generate URI for the config
-                uri_command = f"python3 {CLI_PATH} show-user-uri -u {config['username']} -ip 4 -s"
-                uri_result = run_cli_command(uri_command)
-                
-                if "Error" not in uri_result:
-                    qr_result = uri_result.replace("IPv4:\n", "").strip()
-                    if "Warning: IP4 or IP6" in qr_result:
-                        qr_result = qr_result.split('\n')[-1].strip()
-                    
-                    # Generate QR code
-                    qr = qrcode.make(qr_result)
-                    bio = io.BytesIO()
-                    qr.save(bio, 'PNG')
-                    bio.seek(0)
-                    
-                    caption = (
-                        f"**Configuration Created! (Diagnose Mode)**\n\n"
-                        f"Plan: {plan['name']}\n"
-                        f"Username: {config['username']}\n"
-                        f"Duration: 30 days\n\n"
-                        f"**Connection URI:**\n`{qr_result}`"
-                    )
-                    
-                    bot.delete_message(call.message.chat.id, call.message.message_id)
-                    bot.send_photo(
-                        call.message.chat.id,
-                        bio,
-                        caption=caption,
-                        parse_mode="Markdown"
-                    )
-                    return
-            
-            bot.answer_callback_query(
-                call.id,
-                "Failed to create configuration in diagnose mode.",
-                show_alert=True
-            )
-            return
-            
-        except Exception as e:
-            bot.answer_callback_query(
-                call.id,
-                "Error in diagnose mode configuration creation.",
-                show_alert=True
-            )
-            return
+        username = f"{username}d"
     
-    # Normal payment flow
-    if not payment_manager.is_enabled():
-        bot.answer_callback_query(
-            call.id,
-            "💢 Payment system is currently disabled. Please contact admin.",
-            show_alert=True
-        )
+    command = f"python3 {CLI_PATH} add-user -u {username} -t {gb} -e 30"
+    result = run_cli_command(command)
+    
+    if "Error" in result:
+        bot.answer_callback_query(call.id, "Failed to create configuration")
+        bot.reply_to(call.message, f"Error creating configuration: {result}")
         return
-    
-    payment = payment_manager.create_payment(
-        amount=plan['price'],
-        plan_type=plan_id,
-        user_id=call.from_user.id
-    )
-    
-    if not payment:
-        bot.answer_callback_query(
-            call.id,
-            "Failed to create payment. Please try again later.",
-            show_alert=True
-        )
-        return
-    
-    markup = types.InlineKeyboardMarkup()
-    check_status = types.InlineKeyboardButton(
-        "🔄 Check Payment Status",
-        callback_data=f"check:{payment['uuid']}"
-    )
-    markup.row(check_status)
-    
-    payment_text = (
-        f"🛍 *Order Details*\n\n"
-        f"Plan: {plan['name']}\n"
-        f"Price: ${plan['price']}\n"
-        f"Order ID: `{payment['order_id']}`\n\n"
-        f"[Click here to pay]({payment['payment_url']})\n\n"
-        "After payment, click 'Check Payment Status' to verify your purchase."
-    )
-    
-    bot.edit_message_text(
-        payment_text,
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=markup,
-        parse_mode="Markdown"
-    )
-    
-    # Start payment checker in background
-    threading.Thread(
-        target=check_payment_background,
-        args=(payment['uuid'], call.from_user.id, plan_id, call.message.chat.id, call.message.message_id),
-        daemon=True
-    ).start()
 
-def create_user_config(user_id, plan_type, is_diagnose=False):
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    uri_command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 4 -s"
+    uri_result = run_cli_command(uri_command)
     
-    try:
-        # Generate a unique username
-        username = f"u{user_id}_{int(time.time())}"
-        if is_diagnose:
-            username = f"{username}d"  # Add diagnose suffix
+    if "Error" not in uri_result:
+        qr_result = uri_result.replace("IPv4:\n", "").strip()
+        if "Warning: IP4 or IP6" in qr_result:
+            qr_result = qr_result.split('\n')[-1].strip()
         
-        # Create user using CLI with proper flags
-        command = f"python3 {CLI_PATH} add-user -u {username} -p {plan_type}"
-        result = run_cli_command(command)
-        
-        if result:
-            try:
-                # Parse the CLI output
-                config_data = json.loads(result)
-            except json.JSONDecodeError:
-                # If not JSON, create a basic config structure
-                config_data = {
-                    'username': username,
-                    'plan': plan_type
-                }
-            
-            # Add purchase date and plan info
-            config_data['username'] = username  # Ensure username is in config
-            config_data['purchase_date'] = current_time
-            config_data['plan'] = plan_type
-            
-            # Save to user_data.json
-            user_data = load_user_data()
-            if str(user_id) not in user_data:
-                user_data[str(user_id)] = []
-            elif not isinstance(user_data[str(user_id)], list):
-                user_data[str(user_id)] = [user_data[str(user_id)]]
-            
-            user_data[str(user_id)].append(config_data)
-            save_user_data(user_data)
-            
-            return {'success': True, 'config': config_data}
-    except Exception as e:
-        print(f"Error creating user config: {str(e)}")
-    
-    return {'success': False, 'error': 'Failed to create configuration'}
+        user_data = load_user_data()
+        new_config = {
+            'username': username,
+            'plan': plan_type,
+            'purchase_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'gb': gb,
+            'days': 30
+        }
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('check:'))
-def handle_check_payment(call):
-    _, uuid = call.data.split(':')
-    status = payment_manager.check_payment_status(uuid)
-    
-    if status == 'paid':
-        bot.answer_callback_query(
-            call.id,
-            "✅ Payment confirmed! Processing your order...",
-            show_alert=True
+        if user_id not in user_data:
+            user_data[user_id] = []
+        elif not isinstance(user_data[user_id], list):
+            user_data[user_id] = [user_data[user_id]]
+        
+        user_data[user_id].append(new_config)
+        save_user_data(user_data)
+
+        qr = qrcode.make(qr_result)
+        bio = io.BytesIO()
+        qr.save(bio, 'PNG')
+        bio.seek(0)
+        
+        mode_text = "(Diagnose Mode)" if diagnose_mode else ""
+        caption = (
+            f"**Configuration Created! {mode_text}**\n\n"
+            f"Plan: {plan_type.title()} ({gb}GB)\n"
+            f"Username: {username}\n"
+            f"Duration: 30 days\n\n"
+            f"**Connection URI:**\n`{qr_result}`"
         )
-    elif status == 'pending':
-        bot.answer_callback_query(
-            call.id,
-            "⏳ Payment pending. Please complete the payment.",
-            show_alert=True
+        
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        bot.send_photo(
+            call.message.chat.id,
+            bio,
+            caption=caption,
+            parse_mode="Markdown"
         )
     else:
-        bot.answer_callback_query(
-            call.id,
-            "❌ Payment not found or expired.",
-            show_alert=True
-        )
+        bot.reply_to(call.message, "Failed to generate configuration URI. Please contact support.")
 
-def check_payment_background(uuid, user_id, plan_type, chat_id, message_id):
-    max_checks = 60  # Check for 30 minutes (30 * 60 seconds with 30-second intervals)
-    check_interval = 30  # seconds
-    
-    for _ in range(max_checks):
-        status = payment_manager.check_payment_status(uuid)
-        
-        if status == 'paid':
-            # Create user configuration
+def generate_stats(user_data, start_time, end_time=None, diagnose_only=False):
+    total_profit = 0
+    total_configs = 0
+    plan_counts = {'basic': 0, 'premium': 0, 'ultimate': 0}
+    plan_prices = {'basic': 1.8, 'premium': 3, 'ultimate': 4.2}
+
+    for user_configs in user_data.values():
+        if not isinstance(user_configs, list):
+            user_configs = [user_configs]
+
+        for config in user_configs:
+            username = config.get('username', '')
+            purchase_date = config.get('purchase_date', '')
+            
+            if not purchase_date:
+                continue
+
             try:
-                result = create_user_config(user_id, plan_type)
-                if result.get('success'):
-                    config = result['config']
-                    
-                    success_text = (
-                        "✅ *Payment Successful!*\n\n"
-                        f"Your {PLANS[plan_type]['name']} plan is now active.\n\n"
-                        "Use 'View My Config' to access your VPN configuration."
-                    )
-                    
-                    markup = types.InlineKeyboardMarkup()
-                    view_config = types.InlineKeyboardButton(
-                        "📱 View Configuration",
-                        callback_data=f"config:{config['username']}"
-                    )
-                    markup.row(view_config)
-                    
-                    bot.edit_message_text(
-                        success_text,
-                        chat_id,
-                        message_id,
-                        reply_markup=markup,
-                        parse_mode="Markdown"
-                    )
-                    return
-            except Exception as e:
-                error_text = (
-                    "⚠️ *Payment Processed but Configuration Failed*\n\n"
-                    "Your payment was successful, but we couldn't create your configuration.\n"
-                    "Please contact support with your Order ID."
-                )
-                bot.edit_message_text(
-                    error_text,
-                    chat_id,
-                    message_id,
-                    parse_mode="Markdown"
-                )
-                return
-        
-        time.sleep(check_interval)
-    
-    # Payment timeout
-    timeout_text = (
-        "⏳ *Payment Time Out*\n\n"
-        "The payment session has expired.\n"
-        "If you already paid, please contact support with your Order ID."
-    )
-    bot.edit_message_text(
-        timeout_text,
-        chat_id,
-        message_id,
-        parse_mode="Markdown"
-    )
+                purchase_time = time.strptime(purchase_date, '%Y-%m-%d %H:%M:%S')
+                purchase_timestamp = time.mktime(purchase_time)
+            except ValueError:
+                continue
+            
+            if purchase_timestamp < start_time:
+                continue
+            if end_time and purchase_timestamp > end_time:
+                continue
 
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '💳 Payment Settings')
-def payment_settings_handler(message):
-    config = load_cryptomus_config()
-    markup = types.InlineKeyboardMarkup()
-    
-    # Status button showing current state
-    status = "✅ Enabled" if config['enabled'] else "❌ Disabled"
-    toggle_text = "Disable" if config['enabled'] else "Enable"
-    toggle = types.InlineKeyboardButton(f"{status} - {toggle_text}", callback_data="payment:toggle")
-    
-    # Configuration buttons
-    set_merchant = types.InlineKeyboardButton("🏢 Set Merchant ID", callback_data="payment:merchant")
-    set_key = types.InlineKeyboardButton("🔑 Set Payment Key", callback_data="payment:key")
-    
-    markup.row(toggle)
-    markup.row(set_merchant)
-    markup.row(set_key)
-    
-    current_config = (
-        "💳 *Current Cryptomus Configuration*\n\n"
-        f"Status: {status}\n"
-        f"Merchant ID: `{'•' * 8}{config['merchant_id'][-4:] if config['merchant_id'] else 'Not Set'}`\n"
-        f"Payment Key: `{'•' * 8}{config['payment_key'][-4:] if config['payment_key'] else 'Not Set'}`"
-    )
-    
-    bot.reply_to(message, current_config, reply_markup=markup, parse_mode="Markdown")
+            # Check if it's a diagnose mode config
+            is_diagnose = username.endswith('d')
+            if diagnose_only and not is_diagnose:
+                continue
+            if not diagnose_only and is_diagnose:
+                continue
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('payment:'))
-def handle_payment_settings(call):
-    _, action = call.data.split(':')
-    config = load_cryptomus_config()
-    
-    if action == 'toggle':
-        config['enabled'] = not config['enabled']
-        save_cryptomus_config(config)
-        # Refresh the payment settings view
-        payment_settings_handler(call.message)
-        bot.answer_callback_query(call.id, "Payment system status updated!")
-        
-    elif action == 'merchant':
-        msg = bot.send_message(
-            call.message.chat.id,
-            "Please enter your Cryptomus Merchant ID:"
-        )
-        bot.register_next_step_handler(msg, save_merchant_id)
-        bot.answer_callback_query(call.id)
-        
-    elif action == 'key':
-        msg = bot.send_message(
-            call.message.chat.id,
-            "Please enter your Cryptomus Payment Key:"
-        )
-        bot.register_next_step_handler(msg, save_payment_key)
-        bot.answer_callback_query(call.id)
+            plan_type = config.get('plan', 'basic')
+            plan_counts[plan_type] += 1
+            total_profit += plan_prices[plan_type]
+            total_configs += 1
 
-def save_merchant_id(message):
-    if message.text == '/cancel':
-        bot.reply_to(message, "❌ Operation cancelled.")
-        return
-        
-    config = load_cryptomus_config()
-    config['merchant_id'] = message.text.strip()
-    save_cryptomus_config(config)
-    
-    # Delete the message containing sensitive data
-    bot.delete_message(message.chat.id, message.message_id)
-    
-    bot.reply_to(message, "✅ Merchant ID updated successfully!")
-    # Refresh the payment settings view
-    payment_settings_handler(message)
-
-def save_payment_key(message):
-    if message.text == '/cancel':
-        bot.reply_to(message, "❌ Operation cancelled.")
-        return
-        
-    config = load_cryptomus_config()
-    config['payment_key'] = message.text.strip()
-    save_cryptomus_config(config)
-    
-    # Delete the message containing sensitive data
-    bot.delete_message(message.chat.id, message.message_id)
-    
-    bot.reply_to(message, "✅ Payment Key updated successfully!")
-    # Refresh the payment settings view
-    payment_settings_handler(message)
+    return total_configs, total_profit, plan_counts
 
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📈 Sales Stats')
 def show_sales_stats(message):
@@ -1100,66 +891,13 @@ def show_sales_stats(message):
 
     bot.reply_to(message, stats_message, parse_mode="Markdown")
 
-def generate_stats(user_data, start_time, end_time=None, diagnose_only=False):
-    total_profit = 0
-    total_configs = 0
-    plan_counts = {'basic': 0, 'premium': 0, 'ultimate': 0}
-    plan_prices = {'basic': 1.8, 'premium': 3, 'ultimate': 4.2}
-
-    for user_configs in user_data.values():
-        if not isinstance(user_configs, list):
-            user_configs = [user_configs]
-
-        for config in user_configs:
-            username = config.get('username', '')
-            purchase_date = config.get('purchase_date', '')
-            
-            if not purchase_date:
-                continue
-
-            try:
-                purchase_time = time.strptime(purchase_date, '%Y-%m-%d %H:%M:%S')
-                purchase_timestamp = time.mktime(purchase_time)
-            except ValueError:
-                continue
-            
-            if purchase_timestamp < start_time:
-                continue
-            if end_time and purchase_timestamp > end_time:
-                continue
-
-            # Check if it's a diagnose mode config
-            is_diagnose = username.endswith('d')
-            if diagnose_only and not is_diagnose:
-                continue
-            if not diagnose_only and is_diagnose:
-                continue
-
-            plan_type = config.get('plan', 'basic')
-            plan_counts[plan_type] += 1
-            total_profit += plan_prices[plan_type]
-            total_configs += 1
-
-    return total_configs, total_profit, plan_counts
-
 def is_admin(user_id):
     return user_id in ADMIN_USER_IDS
 
-def load_cryptomus_config():
-    try:
-        if os.path.exists(CRYPTOMUS_CONFIG_FILE):
-            with open(CRYPTOMUS_CONFIG_FILE, 'r') as f:
-                return json.load(f)
-    except Exception as e:
-        print(f"Error loading Cryptomus config: {str(e)}")
-    return {}
-
-def save_cryptomus_config(config):
-    try:
-        with open(CRYPTOMUS_CONFIG_FILE, 'w') as f:
-            json.dump(config, f, indent=4)
-    except Exception as e:
-        print(f"Error saving Cryptomus config: {str(e)}")
+def update_env_file(key, value):
+    env_file_path = '/etc/hysteria/core/scripts/telegrambot/.env'
+    with open(env_file_path, 'a') as env_file:
+        env_file.write(f"{key}={value}\n")
 
 if __name__ == '__main__':
     bot.polling(none_stop=True)
