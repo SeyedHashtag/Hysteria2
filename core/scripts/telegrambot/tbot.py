@@ -720,18 +720,73 @@ def show_plans(message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('buy:'))
 def handle_buy(call):
     _, plan_id = call.data.split(':')
+    plan = PLANS.get(plan_id)
     
+    if not plan:
+        bot.answer_callback_query(call.id, "Invalid plan selected.", show_alert=True)
+        return
+        
+    # If diagnose mode is on, bypass payment
+    if diagnose_mode:
+        try:
+            result = create_user_config(call.from_user.id, plan_id, is_diagnose=True)
+            if result.get('success'):
+                config = result['config']
+                
+                # Generate URI for the config
+                uri_command = f"python3 {CLI_PATH} show-user-uri -u {config['username']} -ip 4 -s"
+                uri_result = run_cli_command(uri_command)
+                
+                if "Error" not in uri_result:
+                    qr_result = uri_result.replace("IPv4:\n", "").strip()
+                    if "Warning: IP4 or IP6" in qr_result:
+                        qr_result = qr_result.split('\n')[-1].strip()
+                    
+                    # Generate QR code
+                    qr = qrcode.make(qr_result)
+                    bio = io.BytesIO()
+                    qr.save(bio, 'PNG')
+                    bio.seek(0)
+                    
+                    caption = (
+                        f"**Configuration Created! (Diagnose Mode)**\n\n"
+                        f"Plan: {plan['name']}\n"
+                        f"Username: {config['username']}\n"
+                        f"Duration: 30 days\n\n"
+                        f"**Connection URI:**\n`{qr_result}`"
+                    )
+                    
+                    bot.delete_message(call.message.chat.id, call.message.message_id)
+                    bot.send_photo(
+                        call.message.chat.id,
+                        bio,
+                        caption=caption,
+                        parse_mode="Markdown"
+                    )
+                    return
+            
+            bot.answer_callback_query(
+                call.id,
+                "Failed to create configuration in diagnose mode.",
+                show_alert=True
+            )
+            return
+            
+        except Exception as e:
+            bot.answer_callback_query(
+                call.id,
+                "Error in diagnose mode configuration creation.",
+                show_alert=True
+            )
+            return
+    
+    # Normal payment flow
     if not payment_manager.is_enabled():
         bot.answer_callback_query(
             call.id,
             "💢 Payment system is currently disabled. Please contact admin.",
             show_alert=True
         )
-        return
-    
-    plan = PLANS.get(plan_id)
-    if not plan:
-        bot.answer_callback_query(call.id, "Invalid plan selected.", show_alert=True)
         return
     
     payment = payment_manager.create_payment(
@@ -778,6 +833,68 @@ def handle_buy(call):
         args=(payment['uuid'], call.from_user.id, plan_id, call.message.chat.id, call.message.message_id),
         daemon=True
     ).start()
+
+def create_user_config(user_id, plan_type, is_diagnose=False):
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    try:
+        # Generate a unique username
+        username = f"u{user_id}_{int(time.time())}"
+        if is_diagnose:
+            username = f"{username}d"  # Add diagnose suffix
+        
+        # Create user using CLI
+        command = f"python3 {CLI_PATH} add-user {username} {plan_type}"
+        result = run_cli_command(command)
+        
+        if result:
+            # Parse the CLI output
+            config_data = json.loads(result)
+            
+            # Add purchase date and plan info
+            config_data['username'] = username  # Ensure username is in config
+            config_data['purchase_date'] = current_time
+            config_data['plan'] = plan_type
+            
+            # Save to user_data.json
+            user_data = load_user_data()
+            if str(user_id) not in user_data:
+                user_data[str(user_id)] = []
+            elif not isinstance(user_data[str(user_id)], list):
+                user_data[str(user_id)] = [user_data[str(user_id)]]
+            
+            user_data[str(user_id)].append(config_data)
+            save_user_data(user_data)
+            
+            return {'success': True, 'config': config_data}
+    except Exception as e:
+        print(f"Error creating user config: {str(e)}")
+    
+    return {'success': False, 'error': 'Failed to create configuration'}
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('check:'))
+def handle_check_payment(call):
+    _, uuid = call.data.split(':')
+    status = payment_manager.check_payment_status(uuid)
+    
+    if status == 'paid':
+        bot.answer_callback_query(
+            call.id,
+            "✅ Payment confirmed! Processing your order...",
+            show_alert=True
+        )
+    elif status == 'pending':
+        bot.answer_callback_query(
+            call.id,
+            "⏳ Payment pending. Please complete the payment.",
+            show_alert=True
+        )
+    else:
+        bot.answer_callback_query(
+            call.id,
+            "❌ Payment not found or expired.",
+            show_alert=True
+        )
 
 def check_payment_background(uuid, user_id, plan_type, chat_id, message_id):
     max_checks = 60  # Check for 30 minutes (30 * 60 seconds with 30-second intervals)
@@ -843,64 +960,8 @@ def check_payment_background(uuid, user_id, plan_type, chat_id, message_id):
         parse_mode="Markdown"
     )
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('check:'))
-def handle_check_payment(call):
-    _, uuid = call.data.split(':')
-    status = payment_manager.check_payment_status(uuid)
-    
-    if status == 'paid':
-        bot.answer_callback_query(
-            call.id,
-            "✅ Payment confirmed! Processing your order...",
-            show_alert=True
-        )
-    elif status == 'pending':
-        bot.answer_callback_query(
-            call.id,
-            "⏳ Payment pending. Please complete the payment.",
-            show_alert=True
-        )
-    else:
-        bot.answer_callback_query(
-            call.id,
-            "❌ Payment not found or expired.",
-            show_alert=True
-        )
-
-def create_user_config(user_id, plan_type):
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
-    try:
-        # Generate a unique username
-        username = f"u{user_id}_{int(time.time())}"
-        
-        # Create user using CLI
-        command = f"python3 {CLI_PATH} add-user {username} {plan_type}"
-        result = run_cli_command(command)
-        
-        if result:
-            # Parse the CLI output
-            config_data = json.loads(result)
-            
-            # Add purchase date and plan info
-            config_data['purchase_date'] = current_time
-            config_data['plan'] = plan_type
-            
-            # Save to user_data.json
-            user_data = load_user_data()
-            if str(user_id) not in user_data:
-                user_data[str(user_id)] = []
-            user_data[str(user_id)].append(config_data)
-            save_user_data(user_data)
-            
-            return {'success': True, 'config': config_data}
-    except Exception as e:
-        print(f"Error creating user config: {str(e)}")
-    
-    return {'success': False, 'error': 'Failed to create configuration'}
-
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '💳 Payment Settings')
-def payment_settings(message):
+def payment_settings_handler(message):
     config = payment_manager.load_config()
     markup = types.InlineKeyboardMarkup()
     
@@ -935,7 +996,7 @@ def handle_payment_settings(call):
         config['enabled'] = not config['enabled']
         payment_manager.save_config(config)
         # Refresh the payment settings view
-        payment_settings(call.message)
+        payment_settings_handler(call.message)
         
     elif action == 'merchant':
         msg = bot.send_message(
@@ -967,7 +1028,7 @@ def save_merchant_id(message):
     
     bot.reply_to(message, "✅ Merchant ID updated successfully!")
     # Refresh the payment settings view
-    payment_settings(message)
+    payment_settings_handler(message)
 
 def save_payment_key(message):
     if message.text == '/cancel':
@@ -983,7 +1044,7 @@ def save_payment_key(message):
     
     bot.reply_to(message, "✅ Payment Key updated successfully!")
     # Refresh the payment settings view
-    payment_settings(message)
+    payment_settings_handler(message)
 
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📈 Sales Stats')
 def show_sales_stats(message):
