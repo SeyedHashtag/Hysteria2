@@ -1,47 +1,86 @@
-import telebot
-import subprocess
-import qrcode
-import io
-import json
+#!/usr/bin/env python3
+"""
+Hysteria2 VPN Telegram Bot
+-------------------------
+A comprehensive Telegram bot for managing Hysteria2 VPN configurations with payment integration.
+Features:
+- User management (add/delete/show)
+- Configuration generation with QR codes
+- Payment processing via Cryptomus
+- Traffic monitoring and statistics
+- Admin controls and backup functionality
+"""
+
+#######################
+# Required Libraries #
+#######################
+# Core libraries
 import os
+import json
+import time
+from datetime import datetime
+
+# Telegram related
+import telebot
+from telebot import types
+from dotenv import load_dotenv
+
+# System operations
+import subprocess
 import shlex
 import re
+
+# Payment and crypto
 import base64
 import uuid
 import asyncio
-from dotenv import load_dotenv
-from telebot import types
-import time
-import hashlib
 import aiohttp
-from datetime import datetime
+import hashlib
 
+# QR code generation
+import qrcode
+import io
+
+#######################
+# Configuration      #
+#######################
+
+# Load environment variables
 load_dotenv()
 
+# Bot and admin configuration
 API_TOKEN = os.getenv('API_TOKEN')
 ADMIN_USER_IDS = json.loads(os.getenv('ADMIN_USER_IDS'))
+
+# File paths
 CLI_PATH = '/etc/hysteria/core/cli.py'
 BACKUP_DIRECTORY = '/opt/hysbackup'
 USER_DATA_FILE = '/etc/hysteria/user_data.json'
 HELP_MESSAGE_FILE = '/etc/hysteria/help_message.txt'
 PAYMENT_SETTINGS_FILE = '/etc/hysteria/payment_settings.json'
 
-# Cryptomus settings
+# Cryptomus payment configuration
 CRYPTOMUS_MERCHANT_ID = os.getenv('CRYPTOMUS_MERCHANT_ID', '')
 CRYPTOMUS_PAYMENT_KEY = os.getenv('CRYPTOMUS_PAYMENT_KEY', '')
 CRYPTOMUS_ENABLED = bool(CRYPTOMUS_MERCHANT_ID and CRYPTOMUS_PAYMENT_KEY)
 
+# Default help message
 DEFAULT_HELP_MESSAGE = """**Welcome to Our VPN Service!**\n\n
 🔹 To view your configurations, click '📱 View My Config'\n
 🔹 To see available plans, click '💰 View Available Plans'\n
 🔹 To download VPN client, click '⬇️ Downloads'\n\n
 For support, contact: @admin_username"""
 
+# Global variables
 diagnose_mode = False
-
 bot = telebot.TeleBot(API_TOKEN)
 
+#######################
+# Utility Functions  #
+#######################
+
 def run_cli_command(command):
+    """Execute a CLI command and return its output."""
     try:
         args = shlex.split(command)
         result = subprocess.check_output(args, stderr=subprocess.STDOUT)
@@ -49,7 +88,16 @@ def run_cli_command(command):
     except subprocess.CalledProcessError as e:
         return f'Error: {e.output.decode("utf-8")}'
 
+def is_admin(user_id):
+    """Check if a user is an admin."""
+    return str(user_id) in map(str, ADMIN_USER_IDS)
+
+#######################
+# Markup Generators  #
+#######################
+
 def create_main_markup():
+    """Create the main admin menu markup."""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('➕ Add User', '👥 Show User')
     markup.row('❌ Delete User', '📊 Server Info')
@@ -59,26 +107,278 @@ def create_main_markup():
     return markup
 
 def create_client_markup():
+    """Create the client menu markup."""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('📱 View My Config', '💰 View Available Plans')
     markup.row('⬇️ Downloads', '❓ Support/Help')
     return markup
 
+#######################
+# Data Management    #
+#######################
+
+def load_user_data():
+    """Load user data from JSON file."""
+    try:
+        if os.path.exists(USER_DATA_FILE):
+            with open(USER_DATA_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Error loading user data: {e}")
+    return {}
+
+def save_user_data(data):
+    """Save user data to JSON file."""
+    try:
+        with open(USER_DATA_FILE, 'w') as f:
+            json.dump(data, f, indent=4)
+        return True
+    except Exception as e:
+        print(f"Error saving user data: {e}")
+        return False
+
+def load_payment_settings():
+    """Load payment settings from JSON file."""
+    try:
+        if os.path.exists(PAYMENT_SETTINGS_FILE):
+            with open(PAYMENT_SETTINGS_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Error loading payment settings: {e}")
+    return {
+        'merchant_id': CRYPTOMUS_MERCHANT_ID,
+        'payment_key': CRYPTOMUS_PAYMENT_KEY,
+        'enabled': CRYPTOMUS_ENABLED,
+        'prices': {
+            'basic': 1.8,
+            'premium': 3.0,
+            'ultimate': 4.2
+        }
+    }
+
+def save_payment_settings(settings):
+    """Save payment settings to JSON file."""
+    try:
+        with open(PAYMENT_SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f, indent=4)
+        return True
+    except Exception as e:
+        print(f"Error saving payment settings: {e}")
+        return False
+
+#######################
+# Payment Processing #
+#######################
+
+async def create_payment(amount: float, order_id: str):
+    """Create a new payment in Cryptomus."""
+    settings = load_payment_settings()
+    if not settings['enabled']:
+        return None
+
+    invoice_data = {
+        "amount": str(amount),
+        "currency": "USD",
+        "order_id": order_id,
+        "url_return": "https://t.me/your_bot_username",
+        "is_payment_multiple": False
+    }
+
+    encoded_data = base64.b64encode(
+        json.dumps(invoice_data).encode("utf-8")
+    ).decode("utf-8")
+
+    headers = {
+        "merchant": settings['merchant_id'],
+        "sign": hashlib.md5(
+            f"{encoded_data}{settings['payment_key']}".encode("utf-8")
+        ).hexdigest(),
+    }
+
+    try:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.post(
+                url="https://api.cryptomus.com/v1/payment",
+                json=invoice_data
+            ) as response:
+                if response.status == 200:
+                    return await response.json()
+    except Exception as e:
+        print(f"Error creating payment: {e}")
+    return None
+
+async def check_payment_status(payment_id: str, user_id: str, plan_type: str, gb: int):
+    """Check payment status and create config when paid."""
+    settings = load_payment_settings()
+    if not settings['enabled']:
+        return
+
+    invoice_data = {"uuid": payment_id}
+    encoded_data = base64.b64encode(
+        json.dumps(invoice_data).encode("utf-8")
+    ).decode("utf-8")
+
+    headers = {
+        "merchant": settings['merchant_id'],
+        "sign": hashlib.md5(
+            f"{encoded_data}{settings['payment_key']}".encode("utf-8")
+        ).hexdigest(),
+    }
+
+    while True:
+        try:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.post(
+                    url="https://api.cryptomus.com/v1/payment/info",
+                    json=invoice_data
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        if result['result']['payment_status'] in ('paid', 'paid_over'):
+                            await create_user_config(user_id, plan_type, gb)
+                            return
+        except Exception as e:
+            print(f"Error checking payment status: {e}")
+        
+        await asyncio.sleep(10)
+
+async def create_user_config(user_id: str, plan_type: str, gb: int):
+    """Create user configuration after successful payment."""
+    timestamp = int(time.time())
+    username = f"{user_id}_{timestamp}"
+    
+    # Create user in CLI
+    command = f"python3 {CLI_PATH} add-user {username} {gb}GB 30"
+    result = run_cli_command(command)
+    
+    if "Error" not in result:
+        # Get user URI
+        uri_command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 4 -s"
+        uri_result = run_cli_command(uri_command)
+        
+        if "Error" not in uri_result:
+            qr_result = uri_result.replace("IPv4:\n", "").strip()
+            if "Warning: IP4 or IP6" in qr_result:
+                qr_result = qr_result.split('\n')[-1].strip()
+            
+            # Save user data
+            user_data = load_user_data()
+            if user_id not in user_data:
+                user_data[user_id] = []
+            
+            user_data[user_id].append({
+                'username': username,
+                'plan': plan_type,
+                'purchase_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'gb': gb,
+                'days': 30
+            })
+            save_user_data(user_data)
+            
+            # Generate and send QR code
+            qr = qrcode.make(qr_result)
+            bio = io.BytesIO()
+            qr.save(bio, 'PNG')
+            bio.seek(0)
+            
+            caption = (
+                f"**Configuration Created!**\n\n"
+                f"Plan: {plan_type.title()} ({gb}GB)\n"
+                f"Username: {username}\n"
+                f"Duration: 30 days\n\n"
+                f"**Connection URI:**\n`{qr_result}`"
+            )
+            
+            bot.send_photo(
+                user_id,
+                bio,
+                caption=caption,
+                parse_mode="Markdown"
+            )
+
+def load_help_message():
+    """Load help message from file."""
+    try:
+        if os.path.exists(HELP_MESSAGE_FILE):
+            with open(HELP_MESSAGE_FILE, 'r') as f:
+                return f.read()
+    except Exception as e:
+        print(f"Error loading help message: {e}")
+    return DEFAULT_HELP_MESSAGE
+
+def save_help_message(message):
+    """Save help message to file."""
+    try:
+        with open(HELP_MESSAGE_FILE, 'w') as f:
+            f.write(message)
+    except Exception as e:
+        print(f"Error saving help message: {e}")
+
+def generate_stats(user_data, start_time, end_time=None, diagnose_only=False):
+    """Generate sales statistics."""
+    total_profit = 0
+    total_configs = 0
+    plan_counts = {'basic': 0, 'premium': 0, 'ultimate': 0}
+    plan_prices = {'basic': 1.8, 'premium': 3.0, 'ultimate': 4.2}
+
+    for user_configs in user_data.values():
+        if not isinstance(user_configs, list):
+            user_configs = [user_configs]
+
+        for config in user_configs:
+            username = config.get('username', '')
+            purchase_date = config.get('purchase_date', '')
+            
+            if not purchase_date:
+                continue
+
+            try:
+                purchase_time = time.strptime(purchase_date, '%Y-%m-%d %H:%M:%S')
+                purchase_timestamp = time.mktime(purchase_time)
+            except ValueError:
+                continue
+            
+            if purchase_timestamp < start_time:
+                continue
+            if end_time and purchase_timestamp > end_time:
+                continue
+
+            # Check if it's a diagnose mode config
+            is_diagnose = username.endswith('d')
+            if diagnose_only and not is_diagnose:
+                continue
+            if not diagnose_only and is_diagnose:
+                continue
+
+            plan_type = config.get('plan', 'basic')
+            plan_counts[plan_type] += 1
+            total_profit += plan_prices[plan_type]
+            total_configs += 1
+
+    return total_configs, total_profit, plan_counts
+
+#######################
+# Message Handlers   #
+#######################
+
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
+    """Handle the /start command."""
     if is_admin(message.from_user.id):
         markup = create_main_markup()
-        bot.reply_to(message, "Welcome to the User Management Bot!", reply_markup=markup)
+        bot.reply_to(message, "Welcome, Admin! Please select an option:", reply_markup=markup)
     else:
         markup = create_client_markup()
-        bot.reply_to(message, "Welcome to our VPN service!", reply_markup=markup)
+        bot.reply_to(message, "Welcome! Please select an option:", reply_markup=markup)
 
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '➕ Add User')
 def add_user(message):
+    """Handle add user command."""
     msg = bot.reply_to(message, "Enter username:")
     bot.register_next_step_handler(msg, process_add_user_step1)
 
 def process_add_user_step1(message):
+    """Process add user step 1."""
     username = message.text.strip()
     if username == "":
         bot.reply_to(message, "Username cannot be empty. Please enter a valid username.")
@@ -107,6 +407,7 @@ def process_add_user_step1(message):
     bot.register_next_step_handler(msg, process_add_user_step2, username)
 
 def process_add_user_step2(message, username):
+    """Process add user step 2."""
     try:
         traffic_limit = int(message.text.strip())
         msg = bot.reply_to(message, "Enter expiration days:")
@@ -115,13 +416,14 @@ def process_add_user_step2(message, username):
         bot.reply_to(message, "Invalid traffic limit. Please enter a number.")
 
 def process_add_user_step3(message, username, traffic_limit):
+    """Process add user step 3."""
     try:
         expiration_days = int(message.text.strip())
         lower_username = username.lower()
         command = f"python3 {CLI_PATH} add-user -u {username} -t {traffic_limit} -e {expiration_days}"
         result = run_cli_command(command)
         bot.send_chat_action(message.chat.id, 'typing')
-        qr_command = f"python3 {CLI_PATH} show-user-uri -u {lower_username} -ip 4"
+        qr_command = f"python3 {CLI_PATH} show-user-uri -u {lower_username} -ip 4 -s -n"
         qr_result = run_cli_command(qr_command).replace("IPv4:\n", "").strip()
 
         if not qr_result:
@@ -140,10 +442,12 @@ def process_add_user_step3(message, username, traffic_limit):
 
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '👥 Show User')
 def show_user(message):
+    """Handle show user command."""
     msg = bot.reply_to(message, "Enter username:")
     bot.register_next_step_handler(msg, process_show_user)
 
 def process_show_user(message):
+    """Process show user."""
     username = message.text.strip().lower()
     bot.send_chat_action(message.chat.id, 'typing')
     command = f"python3 {CLI_PATH} list-users"
@@ -253,16 +557,9 @@ def process_show_user(message):
         parse_mode="Markdown"
     )
 
-
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📊 Server Info')
-def server_info(message):
-    command = f"python3 {CLI_PATH} server-info"
-    result = run_cli_command(command)
-    bot.send_chat_action(message.chat.id, 'typing')
-    bot.reply_to(message, result)
-
 @bot.callback_query_handler(func=lambda call: call.data.startswith('edit_') or call.data.startswith('renew_') or call.data.startswith('block_') or call.data.startswith('reset_') or call.data.startswith('ipv6_'))
 def handle_edit_callback(call):
+    """Handle edit callback."""
     action, username = call.data.split(':')
     if action == 'edit_username':
         msg = bot.send_message(call.message.chat.id, f"Enter new username for {username}:")
@@ -312,18 +609,21 @@ def handle_edit_callback(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_block:'))
 def handle_block_confirmation(call):
+    """Handle block confirmation."""
     _, username, block_status = call.data.split(':')
     command = f"python3 {CLI_PATH} edit-user -u {username} {'-b' if block_status == 'true' else ''}"
     result = run_cli_command(command)
     bot.send_message(call.message.chat.id, result)
 
 def process_edit_username(message, username):
+    """Process edit username."""
     new_username = message.text.strip()
     command = f"python3 {CLI_PATH} edit-user -u {username} -nu {new_username}"
     result = run_cli_command(command)
     bot.reply_to(message, result)
 
 def process_edit_traffic(message, username):
+    """Process edit traffic."""
     try:
         new_traffic_limit = int(message.text.strip())
         command = f"python3 {CLI_PATH} edit-user -u {username} -nt {new_traffic_limit}"
@@ -333,6 +633,7 @@ def process_edit_traffic(message, username):
         bot.reply_to(message, "Invalid traffic limit. Please enter a number.")
 
 def process_edit_expiration(message, username):
+    """Process edit expiration."""
     try:
         new_expiration_days = int(message.text.strip())
         command = f"python3 {CLI_PATH} edit-user -u {username} -ne {new_expiration_days}"
@@ -343,10 +644,12 @@ def process_edit_expiration(message, username):
 
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '❌ Delete User')
 def delete_user(message):
+    """Handle delete user command."""
     msg = bot.reply_to(message, "Enter username:")
     bot.register_next_step_handler(msg, process_delete_user)
 
 def process_delete_user(message):
+    """Process delete user."""
     username = message.text.strip().lower()
     command = f"python3 {CLI_PATH} remove-user -u {username}"
     result = run_cli_command(command)
@@ -354,6 +657,7 @@ def process_delete_user(message):
 
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '💾 Backup Server')
 def backup_server(message):
+    """Handle backup server command."""
     bot.reply_to(message, "Starting backup. This may take a few moments...")
     bot.send_chat_action(message.chat.id, 'typing')
     
@@ -383,6 +687,7 @@ def backup_server(message):
 
 @bot.inline_handler(lambda query: is_admin(query.from_user.id))
 def handle_inline_query(query):
+    """Handle inline query."""
     command = f"python3 {CLI_PATH} list-users"
     result = run_cli_command(command)
     try:
@@ -414,6 +719,7 @@ def handle_inline_query(query):
 
 @bot.message_handler(func=lambda message: message.text == '⬇️ Downloads')
 def show_downloads(message):
+    """Handle downloads command."""
     markup = types.InlineKeyboardMarkup()
     
     # Android buttons
@@ -459,6 +765,7 @@ def show_downloads(message):
 
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📢 Broadcast Message')
 def broadcast_message(message):
+    """Handle broadcast message command."""
     markup = types.InlineKeyboardMarkup()
     all_users = types.InlineKeyboardButton("👥 All Users", callback_data="broadcast:all")
     active_users = types.InlineKeyboardButton("✅ Active Users", callback_data="broadcast:active")
@@ -471,6 +778,7 @@ def broadcast_message(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('broadcast:'))
 def handle_broadcast_selection(call):
+    """Handle broadcast selection."""
     _, user_type = call.data.split(':')
     msg = bot.send_message(
         call.message.chat.id,
@@ -479,6 +787,7 @@ def handle_broadcast_selection(call):
     bot.register_next_step_handler(msg, process_broadcast_message, user_type)
 
 def process_broadcast_message(message, user_type):
+    """Process broadcast message."""
     if message.text == '/cancel':
         bot.reply_to(message, "Broadcast cancelled.")
         return
@@ -550,6 +859,7 @@ def process_broadcast_message(message, user_type):
 
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📝 Edit Help')
 def edit_help_message(message):
+    """Handle edit help message command."""
     current_message = load_help_message()
     msg = bot.reply_to(message, 
                       "Current help message is:\n\n" + current_message + 
@@ -557,6 +867,7 @@ def edit_help_message(message):
     bot.register_next_step_handler(msg, process_edit_help_message)
 
 def process_edit_help_message(message):
+    """Process edit help message."""
     if message.text.lower() == '/cancel':
         bot.reply_to(message, "❌ Help message update cancelled.")
         return
@@ -564,54 +875,78 @@ def process_edit_help_message(message):
     save_help_message(message.text)
     bot.reply_to(message, "✅ Help message updated successfully!")
 
-def load_help_message():
-    try:
-        if os.path.exists(HELP_MESSAGE_FILE):
-            with open(HELP_MESSAGE_FILE, 'r') as f:
-                return f.read()
-    except Exception as e:
-        print(f"Error loading help message: {str(e)}")
-    return DEFAULT_HELP_MESSAGE
-
-def save_help_message(message):
-    try:
-        with open(HELP_MESSAGE_FILE, 'w') as f:
-            f.write(message)
-    except Exception as e:
-        print(f"Error saving help message: {str(e)}")
-
 @bot.message_handler(func=lambda message: message.text == '❓ Support/Help')
 def support_help(message):
+    """Handle support/help command."""
     help_text = load_help_message()
     bot.reply_to(message, help_text, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '🔍 Toggle Diagnose Mode')
 def toggle_diagnose_mode(message):
+    """Handle toggle diagnose mode command."""
     global diagnose_mode
     diagnose_mode = not diagnose_mode
     status = "ON" if diagnose_mode else "OFF"
     bot.reply_to(message, f"Diagnose mode is now {status}.")
 
-def load_user_data():
-    try:
-        if os.path.exists(USER_DATA_FILE):
-            with open(USER_DATA_FILE, 'r') as f:
-                return json.load(f)
-        return {}
-    except Exception as e:
-        print(f"Error loading user data: {str(e)}")
-        return {}
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📈 Sales Stats')
+def show_sales_stats(message):
+    """Handle show sales stats command."""
+    user_data = load_user_data()
+    current_time = time.time()
+    
+    day_start = current_time - (24 * 60 * 60)  # 24 hours ago
+    week_start = current_time - (7 * 24 * 60 * 60)  # 7 days ago
 
-def save_user_data(data):
-    try:
-        os.makedirs(os.path.dirname(USER_DATA_FILE), exist_ok=True)
-        with open(USER_DATA_FILE, 'w') as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        print(f"Error saving user data: {str(e)}")
+    day_configs, day_profit, day_plans = generate_stats(user_data, day_start)
+    week_configs, week_profit, week_plans = generate_stats(user_data, week_start)
+
+    day_test_configs, day_test_profit, day_test_plans = generate_stats(user_data, day_start, diagnose_only=True)
+    week_test_configs, week_test_profit, week_test_plans = generate_stats(user_data, week_start, diagnose_only=True)
+
+    stats_message = (
+        "📊 **Sales Statistics**\n\n"
+        "**Today's Sales:**\n"
+        f"Total Configs: {day_configs}\n"
+        f"Total Profit: ${day_profit:.2f}\n"
+        f"Basic Plans: {day_plans['basic']}\n"
+        f"Premium Plans: {day_plans['premium']}\n"
+        f"Ultimate Plans: {day_plans['ultimate']}\n\n"
+        
+        "**Weekly Sales:**\n"
+        f"Total Configs: {week_configs}\n"
+        f"Total Profit: ${week_profit:.2f}\n"
+        f"Basic Plans: {week_plans['basic']}\n"
+        f"Premium Plans: {week_plans['premium']}\n"
+        f"Ultimate Plans: {week_plans['ultimate']}\n\n"
+        
+        "🧪 **Diagnose Mode Stats**\n\n"
+        "**Today's Test Configs:**\n"
+        f"Total Test Configs: {day_test_configs}\n"
+        f"Basic Plans: {day_test_plans['basic']}\n"
+        f"Premium Plans: {day_test_plans['premium']}\n"
+        f"Ultimate Plans: {day_test_plans['ultimate']}\n\n"
+        
+        "**Weekly Test Configs:**\n"
+        f"Total Test Configs: {week_test_configs}\n"
+        f"Basic Plans: {week_test_plans['basic']}\n"
+        f"Premium Plans: {week_test_plans['premium']}\n"
+        f"Ultimate Plans: {week_test_plans['ultimate']}"
+    )
+
+    bot.reply_to(message, stats_message, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📊 Server Info')
+def server_info(message):
+    """Handle server info command."""
+    command = f"python3 {CLI_PATH} server-info"
+    result = run_cli_command(command)
+    bot.send_chat_action(message.chat.id, 'typing')
+    bot.reply_to(message, result)
 
 @bot.message_handler(func=lambda message: message.text == '📱 View My Config')
 def view_my_config(message):
+    """Handle view my config command."""
     user_id = str(message.from_user.id)
     user_data = load_user_data()
 
@@ -666,7 +1001,7 @@ def view_my_config(message):
             bio = io.BytesIO()
             qr.save(bio, 'PNG')
             bio.seek(0)
-
+            
             traffic_limit = user_details.get('max_download_bytes', 0) / (1024 ** 3)
             used_traffic = (user_details.get('upload_bytes', 0) + user_details.get('download_bytes', 0)) / (1024 ** 3)
             expiration_days = user_details.get('expiration_days', 0)
@@ -701,6 +1036,7 @@ def view_my_config(message):
 
 @bot.message_handler(func=lambda message: message.text == '💰 View Available Plans')
 def view_available_plans(message):
+    """Handle view available plans command."""
     settings = load_payment_settings()
     plans = [
         f"🚀 Basic Plan\n- 30GB Traffic\n- 30 Days\n- Price: ${settings['prices']['basic']}",
@@ -732,127 +1068,9 @@ def view_available_plans(message):
     
     bot.reply_to(message, response, reply_markup=markup, parse_mode="Markdown")
 
-async def create_payment(amount: float, order_id: str):
-    settings = load_payment_settings()
-    if not settings['enabled']:
-        return None
-
-    invoice_data = {
-        "amount": str(amount),
-        "currency": "USD",
-        "order_id": order_id,
-        "url_return": "https://t.me/your_bot_username",
-        "is_payment_multiple": False
-    }
-
-    encoded_data = base64.b64encode(
-        json.dumps(invoice_data).encode("utf-8")
-    ).decode("utf-8")
-
-    headers = {
-        "merchant": settings['merchant_id'],
-        "sign": hashlib.md5(
-            f"{encoded_data}{settings['payment_key']}".encode("utf-8")
-        ).hexdigest(),
-    }
-
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.post(
-                url="https://api.cryptomus.com/v1/payment",
-                json=invoice_data
-            ) as response:
-                if response.status == 200:
-                    return await response.json()
-    except Exception as e:
-        print(f"Error creating payment: {e}")
-    return None
-
-async def check_payment_status(payment_id: str, user_id: str, plan_type: str, gb: int):
-    settings = load_payment_settings()
-    if not settings['enabled']:
-        return
-
-    invoice_data = {"uuid": payment_id}
-    encoded_data = base64.b64encode(
-        json.dumps(invoice_data).encode("utf-8")
-    ).decode("utf-8")
-
-    headers = {
-        "merchant": settings['merchant_id'],
-        "sign": hashlib.md5(
-            f"{encoded_data}{settings['payment_key']}".encode("utf-8")
-        ).hexdigest(),
-    }
-
-    while True:
-        try:
-            async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.post(
-                    url="https://api.cryptomus.com/v1/payment/info",
-                    json=invoice_data
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        if result['result']['payment_status'] in ('paid', 'paid_over'):
-                            # Create configuration
-                            timestamp = int(time.time())
-                            username = f"{user_id}_{timestamp}"
-                            
-                            command = f"python3 {CLI_PATH} add-user {username} {gb}GB 30"
-                            result = run_cli_command(command)
-                            
-                            if "Error" not in result:
-                                uri_command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 4 -s"
-                                uri_result = run_cli_command(uri_command)
-                                
-                                if "Error" not in uri_result:
-                                    qr_result = uri_result.replace("IPv4:\n", "").strip()
-                                    if "Warning: IP4 or IP6" in qr_result:
-                                        qr_result = qr_result.split('\n')[-1].strip()
-                                    
-                                    # Save user data
-                                    user_data = load_user_data()
-                                    if user_id not in user_data:
-                                        user_data[user_id] = []
-                                    
-                                    user_data[user_id].append({
-                                        'username': username,
-                                        'plan': plan_type,
-                                        'purchase_date': time.strftime('%Y-%m-%d %H:%M:%S'),
-                                        'gb': gb,
-                                        'days': 30
-                                    })
-                                    save_user_data(user_data)
-                                    
-                                    # Generate QR code
-                                    qr = qrcode.make(qr_result)
-                                    bio = io.BytesIO()
-                                    qr.save(bio, 'PNG')
-                                    bio.seek(0)
-                                    
-                                    caption = (
-                                        f"**Configuration Created!**\n\n"
-                                        f"Plan: {plan_type.title()} ({gb}GB)\n"
-                                        f"Username: {username}\n"
-                                        f"Duration: 30 days\n\n"
-                                        f"**Connection URI:**\n`{qr_result}`"
-                                    )
-                                    
-                                    bot.send_photo(
-                                        user_id,
-                                        bio,
-                                        caption=caption,
-                                        parse_mode="Markdown"
-                                    )
-                                    return
-        except Exception as e:
-            print(f"Error checking payment status: {e}")
-        
-        await asyncio.sleep(10)
-
 @bot.callback_query_handler(func=lambda call: call.data.startswith('purchase_plan:'))
 def handle_purchase(call):
+    """Handle purchase callback."""
     settings = load_payment_settings()
     if not settings['enabled'] and not diagnose_mode:
         bot.answer_callback_query(call.id, "Payment system is currently disabled!")
@@ -954,124 +1172,6 @@ _Your configuration will be generated automatically after payment confirmation._
         loop.create_task(check_payment_status(payment_id, user_id, plan_type, gb))
     else:
         bot.answer_callback_query(call.id, "Error creating payment! Please try again later.")
-
-def load_payment_settings():
-    try:
-        if os.path.exists(PAYMENT_SETTINGS_FILE):
-            with open(PAYMENT_SETTINGS_FILE, 'r') as f:
-                return json.load(f)
-    except Exception as e:
-        print(f"Error loading payment settings: {e}")
-    return {
-        'merchant_id': CRYPTOMUS_MERCHANT_ID,
-        'payment_key': CRYPTOMUS_PAYMENT_KEY,
-        'enabled': CRYPTOMUS_ENABLED,
-        'prices': {
-            'basic': 1.8,
-            'premium': 3.0,
-            'ultimate': 4.2
-        }
-    }
-
-def save_payment_settings(settings):
-    try:
-        with open(PAYMENT_SETTINGS_FILE, 'w') as f:
-            json.dump(settings, f, indent=4)
-        return True
-    except Exception as e:
-        print(f"Error saving payment settings: {e}")
-        return False
-
-def generate_stats(user_data, start_time, end_time=None, diagnose_only=False):
-    total_profit = 0
-    total_configs = 0
-    plan_counts = {'basic': 0, 'premium': 0, 'ultimate': 0}
-    plan_prices = {'basic': 1.8, 'premium': 3.0, 'ultimate': 4.2}
-
-    for user_configs in user_data.values():
-        if not isinstance(user_configs, list):
-            user_configs = [user_configs]
-
-        for config in user_configs:
-            username = config.get('username', '')
-            purchase_date = config.get('purchase_date', '')
-            
-            if not purchase_date:
-                continue
-
-            try:
-                purchase_time = time.strptime(purchase_date, '%Y-%m-%d %H:%M:%S')
-                purchase_timestamp = time.mktime(purchase_time)
-            except ValueError:
-                continue
-            
-            if purchase_timestamp < start_time:
-                continue
-            if end_time and purchase_timestamp > end_time:
-                continue
-
-            # Check if it's a diagnose mode config
-            is_diagnose = username.endswith('d')
-            if diagnose_only and not is_diagnose:
-                continue
-            if not diagnose_only and is_diagnose:
-                continue
-
-            plan_type = config.get('plan', 'basic')
-            plan_counts[plan_type] += 1
-            total_profit += plan_prices[plan_type]
-            total_configs += 1
-
-    return total_configs, total_profit, plan_counts
-
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '📈 Sales Stats')
-def show_sales_stats(message):
-    user_data = load_user_data()
-    current_time = time.time()
-    
-    day_start = current_time - (24 * 60 * 60)  # 24 hours ago
-    week_start = current_time - (7 * 24 * 60 * 60)  # 7 days ago
-
-    day_configs, day_profit, day_plans = generate_stats(user_data, day_start)
-    week_configs, week_profit, week_plans = generate_stats(user_data, week_start)
-
-    day_test_configs, day_test_profit, day_test_plans = generate_stats(user_data, day_start, diagnose_only=True)
-    week_test_configs, week_test_profit, week_test_plans = generate_stats(user_data, week_start, diagnose_only=True)
-
-    stats_message = (
-        "📊 **Sales Statistics**\n\n"
-        "**Today's Sales:**\n"
-        f"Total Configs: {day_configs}\n"
-        f"Total Profit: ${day_profit:.2f}\n"
-        f"Basic Plans: {day_plans['basic']}\n"
-        f"Premium Plans: {day_plans['premium']}\n"
-        f"Ultimate Plans: {day_plans['ultimate']}\n\n"
-        
-        "**Weekly Sales:**\n"
-        f"Total Configs: {week_configs}\n"
-        f"Total Profit: ${week_profit:.2f}\n"
-        f"Basic Plans: {week_plans['basic']}\n"
-        f"Premium Plans: {week_plans['premium']}\n"
-        f"Ultimate Plans: {week_plans['ultimate']}\n\n"
-        
-        "🧪 **Diagnose Mode Stats**\n\n"
-        "**Today's Test Configs:**\n"
-        f"Total Test Configs: {day_test_configs}\n"
-        f"Basic Plans: {day_test_plans['basic']}\n"
-        f"Premium Plans: {day_test_plans['premium']}\n"
-        f"Ultimate Plans: {day_test_plans['ultimate']}\n\n"
-        
-        "**Weekly Test Configs:**\n"
-        f"Total Test Configs: {week_test_configs}\n"
-        f"Basic Plans: {week_test_plans['basic']}\n"
-        f"Premium Plans: {week_test_plans['premium']}\n"
-        f"Ultimate Plans: {week_test_plans['ultimate']}"
-    )
-
-    bot.reply_to(message, stats_message, parse_mode="Markdown")
-
-def is_admin(user_id):
-    return user_id in ADMIN_USER_IDS
 
 if __name__ == '__main__':
     bot.polling(none_stop=True)
