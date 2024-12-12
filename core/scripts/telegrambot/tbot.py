@@ -6,11 +6,14 @@ import json
 import os
 import shlex
 import re
+import base64
+import uuid
+import asyncio
 from dotenv import load_dotenv
 from telebot import types
 import time
 import hashlib
-import requests
+import aiohttp
 from datetime import datetime
 
 load_dotenv()
@@ -729,6 +732,125 @@ def view_available_plans(message):
     
     bot.reply_to(message, response, reply_markup=markup, parse_mode="Markdown")
 
+async def create_payment(amount: float, order_id: str):
+    settings = load_payment_settings()
+    if not settings['enabled']:
+        return None
+
+    invoice_data = {
+        "amount": str(amount),
+        "currency": "USD",
+        "order_id": order_id,
+        "url_return": "https://t.me/your_bot_username",
+        "is_payment_multiple": False
+    }
+
+    encoded_data = base64.b64encode(
+        json.dumps(invoice_data).encode("utf-8")
+    ).decode("utf-8")
+
+    headers = {
+        "merchant": settings['merchant_id'],
+        "sign": hashlib.md5(
+            f"{encoded_data}{settings['payment_key']}".encode("utf-8")
+        ).hexdigest(),
+    }
+
+    try:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.post(
+                url="https://api.cryptomus.com/v1/payment",
+                json=invoice_data
+            ) as response:
+                if response.status == 200:
+                    return await response.json()
+    except Exception as e:
+        print(f"Error creating payment: {e}")
+    return None
+
+async def check_payment_status(payment_id: str, user_id: str, plan_type: str, gb: int):
+    settings = load_payment_settings()
+    if not settings['enabled']:
+        return
+
+    invoice_data = {"uuid": payment_id}
+    encoded_data = base64.b64encode(
+        json.dumps(invoice_data).encode("utf-8")
+    ).decode("utf-8")
+
+    headers = {
+        "merchant": settings['merchant_id'],
+        "sign": hashlib.md5(
+            f"{encoded_data}{settings['payment_key']}".encode("utf-8")
+        ).hexdigest(),
+    }
+
+    while True:
+        try:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.post(
+                    url="https://api.cryptomus.com/v1/payment/info",
+                    json=invoice_data
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        if result['result']['payment_status'] in ('paid', 'paid_over'):
+                            # Create configuration
+                            timestamp = int(time.time())
+                            username = f"{user_id}_{timestamp}"
+                            
+                            command = f"python3 {CLI_PATH} add-user {username} {gb}GB 30"
+                            result = run_cli_command(command)
+                            
+                            if "Error" not in result:
+                                uri_command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 4 -s"
+                                uri_result = run_cli_command(uri_command)
+                                
+                                if "Error" not in uri_result:
+                                    qr_result = uri_result.replace("IPv4:\n", "").strip()
+                                    if "Warning: IP4 or IP6" in qr_result:
+                                        qr_result = qr_result.split('\n')[-1].strip()
+                                    
+                                    # Save user data
+                                    user_data = load_user_data()
+                                    if user_id not in user_data:
+                                        user_data[user_id] = []
+                                    
+                                    user_data[user_id].append({
+                                        'username': username,
+                                        'plan': plan_type,
+                                        'purchase_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+                                        'gb': gb,
+                                        'days': 30
+                                    })
+                                    save_user_data(user_data)
+                                    
+                                    # Generate QR code
+                                    qr = qrcode.make(qr_result)
+                                    bio = io.BytesIO()
+                                    qr.save(bio, 'PNG')
+                                    bio.seek(0)
+                                    
+                                    caption = (
+                                        f"**Configuration Created!**\n\n"
+                                        f"Plan: {plan_type.title()} ({gb}GB)\n"
+                                        f"Username: {username}\n"
+                                        f"Duration: 30 days\n\n"
+                                        f"**Connection URI:**\n`{qr_result}`"
+                                    )
+                                    
+                                    bot.send_photo(
+                                        user_id,
+                                        bio,
+                                        caption=caption,
+                                        parse_mode="Markdown"
+                                    )
+                                    return
+        except Exception as e:
+            print(f"Error checking payment status: {e}")
+        
+        await asyncio.sleep(10)
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('purchase_plan:'))
 def handle_purchase(call):
     settings = load_payment_settings()
@@ -741,43 +863,79 @@ def handle_purchase(call):
     gb = int(gb)
     
     if diagnose_mode:
-        # Handle test purchase in diagnose mode
-        timestamp = int(time.time())
-        username = f"user_{timestamp}"
+        # Use previous flow for diagnose mode
+        current_time = time.strftime('%Y%m%d%H%M%S')
+        username = f"{user_id}d{current_time}"
         
-        command = f"python3 {CLI_PATH} add-user {username} {gb}GB 30"
+        command = f"python3 {CLI_PATH} add-user -u {username} -t {gb} -e 30"
         result = run_cli_command(command)
         
-        if "Error" not in result:
-            # Save user data
+        if "Error" in result:
+            bot.answer_callback_query(call.id, "Failed to create configuration")
+            bot.reply_to(call.message, f"Error creating configuration: {result}")
+            return
+
+        uri_command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 4 -s"
+        uri_result = run_cli_command(uri_command)
+        
+        if "Error" not in uri_result:
+            qr_result = uri_result.replace("IPv4:\n", "").strip()
+            if "Warning: IP4 or IP6" in qr_result:
+                qr_result = qr_result.split('\n')[-1].strip()
+            
             user_data = load_user_data()
+            new_config = {
+                'username': username,
+                'plan': plan_type,
+                'purchase_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'gb': gb,
+                'days': 30
+            }
+
             if user_id not in user_data:
                 user_data[user_id] = []
-            user_data[user_id].append({
-                'username': username,
-                'traffic_limit': f"{gb}GB",
-                'created_at': timestamp,
-                'plan_type': plan_type
-            })
-            save_user_data(user_data)
+            elif not isinstance(user_data[user_id], list):
+                user_data[user_id] = [user_data[user_id]]
             
-            bot.answer_callback_query(call.id, "Test purchase successful!")
-            bot.send_message(
+            user_data[user_id].append(new_config)
+            save_user_data(user_data)
+
+            qr = qrcode.make(qr_result)
+            bio = io.BytesIO()
+            qr.save(bio, 'PNG')
+            bio.seek(0)
+            
+            caption = (
+                f"**Configuration Created! (Diagnose Mode)**\n\n"
+                f"Plan: {plan_type.title()} ({gb}GB)\n"
+                f"Username: {username}\n"
+                f"Duration: 30 days\n\n"
+                f"**Connection URI:**\n`{qr_result}`"
+            )
+            
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            bot.send_photo(
                 call.message.chat.id,
-                f"✅ Test purchase successful!\nUsername: {username}\nTraffic: {gb}GB\nDuration: 30 days"
+                bio,
+                caption=caption,
+                parse_mode="Markdown"
             )
         else:
-            bot.answer_callback_query(call.id, "Error in test purchase!")
+            bot.reply_to(call.message, "Failed to generate configuration URI. Please contact support.")
         return
 
-    # Create real payment
+    # Handle real payment
     amount = settings['prices'][plan_type]
-    order_id = f"{user_id}_{plan_type}_{gb}_{int(time.time())}"
+    order_id = str(uuid.uuid4())
     
-    payment = create_cryptomus_payment(amount, order_id=order_id)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    payment = loop.run_until_complete(create_payment(amount, order_id))
+    
     if payment and payment.get('result'):
         result = payment['result']
         payment_url = result.get('url')
+        payment_id = result.get('uuid')
         
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔗 Pay Now", url=payment_url))
@@ -788,9 +946,12 @@ def handle_purchase(call):
 🎯 Plan: {plan_type.title()} ({gb}GB)
 💳 Payment URL: [Click here to pay]({payment_url})
 
-_After payment is confirmed, your configuration will be automatically generated._"""
+_Your configuration will be generated automatically after payment confirmation._"""
         
         bot.send_message(call.message.chat.id, response, reply_markup=markup, parse_mode="Markdown")
+        
+        # Start payment status checker
+        loop.create_task(check_payment_status(payment_id, user_id, plan_type, gb))
     else:
         bot.answer_callback_query(call.id, "Error creating payment! Please try again later.")
 
@@ -820,151 +981,6 @@ def save_payment_settings(settings):
     except Exception as e:
         print(f"Error saving payment settings: {e}")
         return False
-
-def create_cryptomus_payment(amount, currency='USD', order_id=None):
-    settings = load_payment_settings()
-    if not settings['enabled']:
-        return None
-
-    url = 'https://api.cryptomus.com/v1/payment'
-    payload = {
-        'amount': str(amount),
-        'currency': currency,
-        'order_id': order_id,
-        'url_return': 'https://t.me/your_bot_username',  # Replace with your bot's username
-        'is_payment_multiple': False
-    }
-    
-    sign = hashlib.md5(
-        json.dumps(payload, sort_keys=True).encode() + 
-        settings['payment_key'].encode()
-    ).hexdigest()
-    
-    headers = {
-        'merchant': settings['merchant_id'],
-        'sign': sign,
-        'Content-Type': 'application/json'
-    }
-    
-    try:
-        response = requests.post(url, json=payload, headers=headers)
-        if response.status_code == 200:
-            return response.json()
-        return None
-    except Exception as e:
-        print(f"Error creating payment: {e}")
-        return None
-
-@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '⚙️ Payment Settings')
-def payment_settings(message):
-    settings = load_payment_settings()
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(
-        types.InlineKeyboardButton(
-            f"{'🟢' if settings['enabled'] else '🔴'} Toggle Payment System",
-            callback_data="payment_toggle"
-        ),
-        types.InlineKeyboardButton("🔑 Set Merchant ID", callback_data="set_merchant_id"),
-        types.InlineKeyboardButton("🔒 Set Payment Key", callback_data="set_payment_key"),
-        types.InlineKeyboardButton("💰 Set Plan Prices", callback_data="set_prices")
-    )
-    
-    status = "🟢 Enabled" if settings['enabled'] else "🔴 Disabled"
-    response = f"""**Payment System Settings**
-
-Status: {status}
-Merchant ID: `{settings['merchant_id'][:6]}...` (hidden)
-Payment Key: `{settings['payment_key'][:6]}...` (hidden)
-
-**Current Prices:**
-Basic Plan: ${settings['prices']['basic']}
-Premium Plan: ${settings['prices']['premium']}
-Ultimate Plan: ${settings['prices']['ultimate']}"""
-
-    bot.reply_to(message, response, reply_markup=markup, parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: call.data in ['payment_toggle', 'set_merchant_id', 'set_payment_key', 'set_prices'])
-def handle_payment_settings(call):
-    settings = load_payment_settings()
-    
-    if call.data == 'payment_toggle':
-        settings['enabled'] = not settings['enabled']
-        save_payment_settings(settings)
-        bot.answer_callback_query(call.id, "Payment system " + ("enabled" if settings['enabled'] else "disabled"))
-        payment_settings(call.message)
-        
-    elif call.data == 'set_merchant_id':
-        msg = bot.send_message(
-            call.message.chat.id,
-            "Please enter your Cryptomus Merchant ID:",
-            reply_markup=types.ForceReply()
-        )
-        bot.register_next_step_handler(msg, process_merchant_id)
-        
-    elif call.data == 'set_payment_key':
-        msg = bot.send_message(
-            call.message.chat.id,
-            "Please enter your Cryptomus Payment Key:",
-            reply_markup=types.ForceReply()
-        )
-        bot.register_next_step_handler(msg, process_payment_key)
-        
-    elif call.data == 'set_prices':
-        msg = bot.send_message(
-            call.message.chat.id,
-            "Please enter prices for all plans in this format:\nbasic premium ultimate\nExample: 1.8 3.0 4.2",
-            reply_markup=types.ForceReply()
-        )
-        bot.register_next_step_handler(msg, process_prices)
-
-def process_merchant_id(message):
-    if not is_admin(message.from_user.id):
-        return
-        
-    settings = load_payment_settings()
-    settings['merchant_id'] = message.text.strip()
-    if save_payment_settings(settings):
-        bot.reply_to(message, "✅ Merchant ID updated successfully!")
-    else:
-        bot.reply_to(message, "❌ Failed to update Merchant ID")
-    payment_settings(message)
-
-def process_payment_key(message):
-    if not is_admin(message.from_user.id):
-        return
-        
-    settings = load_payment_settings()
-    settings['payment_key'] = message.text.strip()
-    if save_payment_settings(settings):
-        bot.reply_to(message, "✅ Payment Key updated successfully!")
-    else:
-        bot.reply_to(message, "❌ Failed to update Payment Key")
-    payment_settings(message)
-
-def process_prices(message):
-    if not is_admin(message.from_user.id):
-        return
-        
-    try:
-        prices = message.text.strip().split()
-        if len(prices) != 3:
-            raise ValueError("Must provide exactly 3 prices")
-            
-        settings = load_payment_settings()
-        settings['prices'] = {
-            'basic': float(prices[0]),
-            'premium': float(prices[1]),
-            'ultimate': float(prices[2])
-        }
-        
-        if save_payment_settings(settings):
-            bot.reply_to(message, "✅ Plan prices updated successfully!")
-        else:
-            bot.reply_to(message, "❌ Failed to update plan prices")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-    
-    payment_settings(message)
 
 def generate_stats(user_data, start_time, end_time=None, diagnose_only=False):
     total_profit = 0
