@@ -14,6 +14,7 @@ FILES_TO_BACKUP=(
     "/etc/hysteria/config.json"
     "/etc/hysteria/.configs.env"
     "/etc/hysteria/user_data.json"
+    "/etc/hysteria/crmus_data.json
 )
 
 zip -j "$BACKUP_FILE" "${FILES_TO_BACKUP[@]}" >/dev/null
