@@ -1176,10 +1176,6 @@ _Your configuration will be generated automatically after payment confirmation._
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '⚙️ Payment Settings')
 def payment_settings(message):
     """Handle payment settings command."""
-    show_payment_settings(message.chat.id)
-
-def show_payment_settings(chat_id, message_id=None):
-    """Show payment settings menu."""
     settings = load_payment_settings()
     
     # Create markup with payment setting options
@@ -1206,7 +1202,7 @@ def show_payment_settings(chat_id, message_id=None):
     markup.add(
         types.InlineKeyboardButton(
             f"Payment System: {status_text}",
-            callback_data="toggle_payment_system"
+            callback_data="toggle_payment"
         )
     )
     
@@ -1219,103 +1215,73 @@ def show_payment_settings(chat_id, message_id=None):
     markup.add(
         types.InlineKeyboardButton(
             f"🏢 Merchant ID: {masked_merchant}",
-            callback_data="edit_merchant_id"
+            callback_data="edit_merchant"
         ),
         types.InlineKeyboardButton(
             f"🔑 Payment Key: {masked_key}",
-            callback_data="edit_payment_key"
+            callback_data="edit_key"
         )
     )
     
-    text = "⚙️ *Payment Settings*\n\nSelect a setting to modify:"
-    
-    if message_id:
-        try:
-            bot.edit_message_text(
-                text,
-                chat_id=chat_id,
-                message_id=message_id,
-                reply_markup=markup,
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            print(f"Error updating message: {e}")
-    else:
-        bot.send_message(
-            chat_id,
-            text,
-            reply_markup=markup,
-            parse_mode="Markdown"
-        )
+    bot.send_message(
+        message.chat.id,
+        "⚙️ *Payment Settings*\n\nSelect a setting to modify:",
+        reply_markup=markup,
+        parse_mode="Markdown"
+    )
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('edit_price:'))
-def handle_edit_price(call):
-    """Handle price editing callback."""
-    _, plan_type = call.data.split(':')
+def handle_price_edit(call):
+    """Handle price editing."""
+    _, plan = call.data.split(':')
     settings = load_payment_settings()
-    current_price = settings['prices'][plan_type]
+    current_price = settings['prices'][plan]
     
-    # Answer the callback to remove loading state
     bot.answer_callback_query(call.id)
-    
-    # Delete the settings menu temporarily
-    bot.delete_message(call.message.chat.id, call.message.message_id)
-    
-    msg = bot.send_message(
+    bot.edit_message_text(
+        f"Current price for {plan} plan is ${current_price}\n"
+        "Enter new price (e.g., 2.5):",
         call.message.chat.id,
-        f"Current price for {plan_type} plan is ${current_price}\n"
-        "Enter new price (e.g., 2.5):\n"
-        "(Send /cancel to cancel)"
+        call.message.message_id
     )
-    bot.register_next_step_handler(msg, process_price_change, plan_type, msg.message_id)
+    bot.register_next_step_handler(call.message, process_new_price, plan)
 
-def process_price_change(message, plan_type, orig_msg_id):
-    """Process price change for a plan."""
+def process_new_price(message, plan):
+    """Process new price input."""
     try:
-        # Delete the prompt message
-        bot.delete_message(message.chat.id, orig_msg_id)
-        
-        if message.text == '/cancel':
-            bot.reply_to(message, "Operation cancelled.")
-            show_payment_settings(message.chat.id)
-            return
-            
         new_price = float(message.text.strip())
         if new_price <= 0:
             bot.reply_to(message, "❌ Price must be greater than 0!")
-            show_payment_settings(message.chat.id)
             return
-            
+        
         settings = load_payment_settings()
-        settings['prices'][plan_type] = new_price
+        settings['prices'][plan] = new_price
         save_payment_settings(settings)
         
-        bot.reply_to(
-            message,
-            f"✅ Price for {plan_type} plan updated to ${new_price}"
+        bot.send_message(
+            message.chat.id,
+            f"✅ Price for {plan} plan updated to ${new_price}"
         )
         
-        # Show updated settings menu
-        show_payment_settings(message.chat.id)
-        
+        # Show updated settings
+        payment_settings(message)
     except ValueError:
         bot.reply_to(message, "❌ Invalid price format! Please enter a number.")
-        show_payment_settings(message.chat.id)
+        payment_settings(message)
 
-@bot.callback_query_handler(func=lambda call: call.data == "toggle_payment_system")
-def handle_toggle_payment_system(call):
+@bot.callback_query_handler(func=lambda call: call.data == "toggle_payment")
+def handle_payment_toggle(call):
     """Handle payment system toggle."""
     settings = load_payment_settings()
     
-    # Check if credentials are set before enabling
     if not settings['enabled'] and (not settings.get('merchant_id') or not settings.get('payment_key')):
         bot.answer_callback_query(
             call.id,
-            "❌ Please set both Merchant ID and Payment Key first!",
+            "❌ Set both Merchant ID and Payment Key first!",
             show_alert=True
         )
         return
-        
+    
     settings['enabled'] = not settings['enabled']
     save_payment_settings(settings)
     
@@ -1326,65 +1292,52 @@ def handle_toggle_payment_system(call):
         show_alert=True
     )
     
-    # Update the settings menu
-    show_payment_settings(call.message.chat.id, call.message.message_id)
+    # Refresh settings menu
+    payment_settings(call.message)
 
-@bot.callback_query_handler(func=lambda call: call.data in ["edit_merchant_id", "edit_payment_key"])
-def handle_edit_payment_credentials(call):
-    """Handle payment credential editing."""
-    setting_type = "Merchant ID" if call.data == "edit_merchant_id" else "Payment Key"
+@bot.callback_query_handler(func=lambda call: call.data in ["edit_merchant", "edit_key"])
+def handle_credential_edit(call):
+    """Handle credential editing."""
+    is_merchant = call.data == "edit_merchant"
+    credential_type = "Merchant ID" if is_merchant else "Payment Key"
     
-    # Answer the callback to remove loading state
     bot.answer_callback_query(call.id)
-    
-    # Delete the settings menu temporarily
-    bot.delete_message(call.message.chat.id, call.message.message_id)
-    
-    msg = bot.send_message(
+    bot.edit_message_text(
+        f"Enter new {credential_type}:",
         call.message.chat.id,
-        f"Enter new {setting_type}:\n"
-        "(Send /cancel to cancel)"
+        call.message.message_id
     )
     bot.register_next_step_handler(
-        msg,
-        process_credential_change,
-        "merchant_id" if call.data == "edit_merchant_id" else "payment_key",
-        msg.message_id
+        call.message,
+        process_new_credential,
+        "merchant_id" if is_merchant else "payment_key"
     )
 
-def process_credential_change(message, credential_type, orig_msg_id):
-    """Process payment credential change."""
-    try:
-        # Delete the prompt message
-        bot.delete_message(message.chat.id, orig_msg_id)
-        
-        if message.text == '/cancel':
-            bot.reply_to(message, "Operation cancelled.")
-            show_payment_settings(message.chat.id)
-            return
-            
-        settings = load_payment_settings()
-        settings[credential_type] = message.text.strip()
-        
-        # Update enabled status based on both credentials being present
-        settings['enabled'] = bool(settings.get('merchant_id') and settings.get('payment_key'))
-        
-        save_payment_settings(settings)
-        
-        # Send success message with masked credential
-        credential = message.text.strip()
-        masked = credential[:4] + "*" * (len(credential) - 4)
-        bot.reply_to(
-            message,
-            f"✅ {credential_type.replace('_', ' ').title()} updated to: {masked}"
-        )
-        
-        # Show updated settings menu
-        show_payment_settings(message.chat.id)
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error updating credential: {str(e)}")
-        show_payment_settings(message.chat.id)
+def process_new_credential(message, credential_type):
+    """Process new credential input."""
+    if not message.text:
+        bot.reply_to(message, "❌ Invalid input!")
+        payment_settings(message)
+        return
+    
+    settings = load_payment_settings()
+    settings[credential_type] = message.text.strip()
+    
+    # Update enabled status if both credentials are present
+    settings['enabled'] = bool(settings.get('merchant_id') and settings.get('payment_key'))
+    save_payment_settings(settings)
+    
+    # Mask the credential in the response
+    credential = message.text.strip()
+    masked = credential[:4] + "*" * (len(credential) - 4)
+    
+    bot.send_message(
+        message.chat.id,
+        f"✅ {credential_type.replace('_', ' ').title()} updated to: {masked}"
+    )
+    
+    # Show updated settings
+    payment_settings(message)
 
 if __name__ == '__main__':
     bot.polling(none_stop=True)
