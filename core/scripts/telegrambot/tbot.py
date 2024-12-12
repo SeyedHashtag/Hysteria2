@@ -843,13 +843,20 @@ def create_user_config(user_id, plan_type, is_diagnose=False):
         if is_diagnose:
             username = f"{username}d"  # Add diagnose suffix
         
-        # Create user using CLI
-        command = f"python3 {CLI_PATH} add-user {username} {plan_type}"
+        # Create user using CLI with proper flags
+        command = f"python3 {CLI_PATH} add-user -u {username} -p {plan_type}"
         result = run_cli_command(command)
         
         if result:
-            # Parse the CLI output
-            config_data = json.loads(result)
+            try:
+                # Parse the CLI output
+                config_data = json.loads(result)
+            except json.JSONDecodeError:
+                # If not JSON, create a basic config structure
+                config_data = {
+                    'username': username,
+                    'plan': plan_type
+                }
             
             # Add purchase date and plan info
             config_data['username'] = username  # Ensure username is in config
@@ -962,7 +969,7 @@ def check_payment_background(uuid, user_id, plan_type, chat_id, message_id):
 
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '💳 Payment Settings')
 def payment_settings_handler(message):
-    config = payment_manager.load_config()
+    config = load_cryptomus_config()
     markup = types.InlineKeyboardMarkup()
     
     # Status button showing current state
@@ -990,13 +997,14 @@ def payment_settings_handler(message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('payment:'))
 def handle_payment_settings(call):
     _, action = call.data.split(':')
-    config = payment_manager.load_config()
+    config = load_cryptomus_config()
     
     if action == 'toggle':
         config['enabled'] = not config['enabled']
-        payment_manager.save_config(config)
+        save_cryptomus_config(config)
         # Refresh the payment settings view
         payment_settings_handler(call.message)
+        bot.answer_callback_query(call.id, "Payment system status updated!")
         
     elif action == 'merchant':
         msg = bot.send_message(
@@ -1004,6 +1012,7 @@ def handle_payment_settings(call):
             "Please enter your Cryptomus Merchant ID:"
         )
         bot.register_next_step_handler(msg, save_merchant_id)
+        bot.answer_callback_query(call.id)
         
     elif action == 'key':
         msg = bot.send_message(
@@ -1011,17 +1020,16 @@ def handle_payment_settings(call):
             "Please enter your Cryptomus Payment Key:"
         )
         bot.register_next_step_handler(msg, save_payment_key)
-    
-    bot.answer_callback_query(call.id)
+        bot.answer_callback_query(call.id)
 
 def save_merchant_id(message):
     if message.text == '/cancel':
         bot.reply_to(message, "❌ Operation cancelled.")
         return
         
-    config = payment_manager.load_config()
+    config = load_cryptomus_config()
     config['merchant_id'] = message.text.strip()
-    payment_manager.save_config(config)
+    save_cryptomus_config(config)
     
     # Delete the message containing sensitive data
     bot.delete_message(message.chat.id, message.message_id)
@@ -1035,9 +1043,9 @@ def save_payment_key(message):
         bot.reply_to(message, "❌ Operation cancelled.")
         return
         
-    config = payment_manager.load_config()
+    config = load_cryptomus_config()
     config['payment_key'] = message.text.strip()
-    payment_manager.save_config(config)
+    save_cryptomus_config(config)
     
     # Delete the message containing sensitive data
     bot.delete_message(message.chat.id, message.message_id)
@@ -1136,6 +1144,22 @@ def generate_stats(user_data, start_time, end_time=None, diagnose_only=False):
 
 def is_admin(user_id):
     return user_id in ADMIN_USER_IDS
+
+def load_cryptomus_config():
+    try:
+        if os.path.exists(CRYPTOMUS_CONFIG_FILE):
+            with open(CRYPTOMUS_CONFIG_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Error loading Cryptomus config: {str(e)}")
+    return {}
+
+def save_cryptomus_config(config):
+    try:
+        with open(CRYPTOMUS_CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=4)
+    except Exception as e:
+        print(f"Error saving Cryptomus config: {str(e)}")
 
 if __name__ == '__main__':
     bot.polling(none_stop=True)
