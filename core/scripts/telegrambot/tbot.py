@@ -103,7 +103,8 @@ def create_main_markup():
     markup.row('❌ Delete User', '📊 Server Info')
     markup.row('💾 Backup Server', '📈 Sales Stats')
     markup.row('📢 Broadcast Message', '📝 Edit Help')
-    markup.row('⚙️ Payment Settings', '🔍 Toggle Diagnose Mode')
+    markup.row('⚙️ Payment Settings', '💰 Edit Plans')
+    markup.row('🔍 Toggle Diagnose Mode')
     return markup
 
 def create_client_markup():
@@ -253,7 +254,7 @@ async def create_user_config(user_id: str, plan_type: str, gb: int):
     
     if "Error" not in result:
         # Get user URI
-        uri_command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 4 -s"
+        uri_command = f"python3 {CLI_PATH} show-user-uri -u {username} -ip 4 -s -n"
         uri_result = run_cli_command(uri_command)
         
         if "Error" not in uri_result:
@@ -452,7 +453,7 @@ def process_show_user(message):
     bot.send_chat_action(message.chat.id, 'typing')
     command = f"python3 {CLI_PATH} list-users"
     result = run_cli_command(command)
-    
+
     try:
         users = json.loads(result)
         existing_users = {user.lower(): user for user in users.keys()}
@@ -1176,168 +1177,94 @@ _Your configuration will be generated automatically after payment confirmation._
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '⚙️ Payment Settings')
 def payment_settings(message):
     """Handle payment settings command."""
-    settings = load_payment_settings()
-    
-    # Create markup with payment setting options
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    
-    # Add buttons for each price setting
-    markup.add(
-        types.InlineKeyboardButton(
-            f"💰 Basic Plan Price: ${settings['prices']['basic']}",
-            callback_data="edit_price:basic"
-        ),
-        types.InlineKeyboardButton(
-            f"💰 Premium Plan Price: ${settings['prices']['premium']}",
-            callback_data="edit_price:premium"
-        ),
-        types.InlineKeyboardButton(
-            f"💰 Ultimate Plan Price: ${settings['prices']['ultimate']}",
-            callback_data="edit_price:ultimate"
-        )
-    )
-    
-    # Add payment system toggle button
-    status_text = "✅ Enabled" if settings['enabled'] else "❌ Disabled"
-    markup.add(
-        types.InlineKeyboardButton(
-            f"Payment System: {status_text}",
-            callback_data="toggle_payment"
-        )
-    )
-    
-    # Add merchant settings buttons
-    merchant_id = settings.get('merchant_id', '')
-    payment_key = settings.get('payment_key', '')
-    masked_merchant = merchant_id[:4] + "*" * (len(merchant_id) - 4) if merchant_id else "Not Set"
-    masked_key = payment_key[:4] + "*" * (len(payment_key) - 4) if payment_key else "Not Set"
-    
-    markup.add(
-        types.InlineKeyboardButton(
-            f"🏢 Merchant ID: {masked_merchant}",
-            callback_data="edit_merchant"
-        ),
-        types.InlineKeyboardButton(
-            f"🔑 Payment Key: {masked_key}",
-            callback_data="edit_key"
-        )
-    )
-    
-    bot.send_message(
-        message.chat.id,
-        "⚙️ *Payment Settings*\n\nSelect a setting to modify:",
-        reply_markup=markup,
-        parse_mode="Markdown"
-    )
+    msg = bot.reply_to(message, "Please enter your Cryptomus Merchant ID:")
+    bot.register_next_step_handler(msg, process_merchant_id)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_price:'))
-def handle_price_edit(call):
-    """Handle price editing."""
-    _, plan = call.data.split(':')
-    settings = load_payment_settings()
-    current_price = settings['prices'][plan]
-    
-    bot.answer_callback_query(call.id)
-    bot.edit_message_text(
-        f"Current price for {plan} plan is ${current_price}\n"
-        "Enter new price (e.g., 2.5):",
-        call.message.chat.id,
-        call.message.message_id
-    )
-    bot.register_next_step_handler(call.message, process_new_price, plan)
-
-def process_new_price(message, plan):
-    """Process new price input."""
-    try:
-        new_price = float(message.text.strip())
-        if new_price <= 0:
-            bot.reply_to(message, "❌ Price must be greater than 0!")
-            return
+def process_merchant_id(message):
+    """Process merchant ID input."""
+    if message.text.lower() == '/cancel':
+        bot.reply_to(message, "❌ Payment settings update cancelled.")
+        return
         
+    merchant_id = message.text.strip()
+    settings = load_payment_settings()
+    settings['merchant_id'] = merchant_id
+    save_payment_settings(settings)
+    
+    msg = bot.reply_to(message, "Now enter your Cryptomus Payment Key:")
+    bot.register_next_step_handler(msg, process_payment_key)
+
+def process_payment_key(message):
+    """Process payment key input."""
+    if message.text.lower() == '/cancel':
+        bot.reply_to(message, "❌ Payment settings update cancelled.")
+        return
+        
+    payment_key = message.text.strip()
+    settings = load_payment_settings()
+    settings['payment_key'] = payment_key
+    settings['enabled'] = bool(settings['merchant_id'] and payment_key)
+    save_payment_settings(settings)
+    
+    bot.reply_to(message, "✅ Payment settings updated successfully!")
+
+@bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '💰 Edit Plans')
+def edit_plans(message):
+    """Handle edit plans command."""
+    settings = load_payment_settings()
+    current_prices = settings.get('prices', {
+        'basic': 1.8,
+        'premium': 3.0,
+        'ultimate': 4.2
+    })
+    
+    msg = bot.reply_to(
+        message,
+        f"Current plan prices:\n"
+        f"Basic: ${current_prices['basic']}\n"
+        f"Premium: ${current_prices['premium']}\n"
+        f"Ultimate: ${current_prices['ultimate']}\n\n"
+        "Enter new prices in this format:\n"
+        "basic_price premium_price ultimate_price\n"
+        "Example: 1.8 3.0 4.2\n\n"
+        "Or type /cancel to cancel."
+    )
+    bot.register_next_step_handler(msg, process_plan_prices)
+
+def process_plan_prices(message):
+    """Process plan prices input."""
+    if message.text.lower() == '/cancel':
+        bot.reply_to(message, "❌ Plan prices update cancelled.")
+        return
+        
+    try:
+        prices = message.text.strip().split()
+        if len(prices) != 3:
+            raise ValueError("Invalid format")
+            
+        basic, premium, ultimate = map(float, prices)
         settings = load_payment_settings()
-        settings['prices'][plan] = new_price
+        settings['prices'] = {
+            'basic': basic,
+            'premium': premium,
+            'ultimate': ultimate
+        }
         save_payment_settings(settings)
         
-        bot.send_message(
-            message.chat.id,
-            f"✅ Price for {plan} plan updated to ${new_price}"
+        bot.reply_to(
+            message,
+            "✅ Plan prices updated successfully!\n\n"
+            f"New prices:\n"
+            f"Basic: ${basic}\n"
+            f"Premium: ${premium}\n"
+            f"Ultimate: ${ultimate}"
         )
-        
-        # Show updated settings
-        payment_settings(message)
     except ValueError:
-        bot.reply_to(message, "❌ Invalid price format! Please enter a number.")
-        payment_settings(message)
-
-@bot.callback_query_handler(func=lambda call: call.data == "toggle_payment")
-def handle_payment_toggle(call):
-    """Handle payment system toggle."""
-    settings = load_payment_settings()
-    
-    if not settings['enabled'] and (not settings.get('merchant_id') or not settings.get('payment_key')):
-        bot.answer_callback_query(
-            call.id,
-            "❌ Set both Merchant ID and Payment Key first!",
-            show_alert=True
+        bot.reply_to(
+            message,
+            "❌ Invalid input format. Please use format: basic_price premium_price ultimate_price\n"
+            "Example: 1.8 3.0 4.2"
         )
-        return
-    
-    settings['enabled'] = not settings['enabled']
-    save_payment_settings(settings)
-    
-    status = "enabled" if settings['enabled'] else "disabled"
-    bot.answer_callback_query(
-        call.id,
-        f"✅ Payment system {status}!",
-        show_alert=True
-    )
-    
-    # Refresh settings menu
-    payment_settings(call.message)
-
-@bot.callback_query_handler(func=lambda call: call.data in ["edit_merchant", "edit_key"])
-def handle_credential_edit(call):
-    """Handle credential editing."""
-    is_merchant = call.data == "edit_merchant"
-    credential_type = "Merchant ID" if is_merchant else "Payment Key"
-    
-    bot.answer_callback_query(call.id)
-    bot.edit_message_text(
-        f"Enter new {credential_type}:",
-        call.message.chat.id,
-        call.message.message_id
-    )
-    bot.register_next_step_handler(
-        call.message,
-        process_new_credential,
-        "merchant_id" if is_merchant else "payment_key"
-    )
-
-def process_new_credential(message, credential_type):
-    """Process new credential input."""
-    if not message.text:
-        bot.reply_to(message, "❌ Invalid input!")
-        payment_settings(message)
-        return
-    
-    settings = load_payment_settings()
-    settings[credential_type] = message.text.strip()
-    
-    # Update enabled status if both credentials are present
-    settings['enabled'] = bool(settings.get('merchant_id') and settings.get('payment_key'))
-    save_payment_settings(settings)
-    
-    # Mask the credential in the response
-    credential = message.text.strip()
-    masked = credential[:4] + "*" * (len(credential) - 4)
-    
-    bot.send_message(
-        message.chat.id,
-        f"✅ {credential_type.replace('_', ' ').title()} updated to: {masked}"
-    )
-    
-    # Show updated settings
-    payment_settings(message)
 
 if __name__ == '__main__':
     bot.polling(none_stop=True)
