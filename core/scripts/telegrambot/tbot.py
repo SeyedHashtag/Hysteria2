@@ -74,6 +74,194 @@ For support, contact: @admin_username"""
 # Global variables
 diagnose_mode = False
 bot = telebot.TeleBot(API_TOKEN)
+user_languages = {}  # Store user language preferences
+
+#######################
+# Language Support   #
+#######################
+
+TRANSLATIONS = {
+    'en': {
+        'view_config': '📱 View My Config',
+        'view_plans': '💰 View Available Plans',
+        'downloads': '⬇️ Downloads',
+        'support': '❓ Support/Help',
+        'select_language': 'Please select your preferred language:',
+        'language_set': 'Language set to English',
+        'welcome': 'Welcome to our VPN service! Please select an option:',
+        'config_not_found': 'No configurations found. Please purchase a plan first.',
+        'active_configs': '**Your Active Configurations:**\n',
+        'expired_configs': '\n**Expired Configurations:**\n',
+        'config_details': 'Username: {}\nPlan: {}\nTraffic: {:.2f}GB/{:.2f}GB\nExpires in: {} days\n',
+        'basic_plan': '🚀 Basic Plan\n- 30GB Traffic\n- 30 Days\n- Price: ${}',
+        'premium_plan': '⚡️ Premium Plan\n- 100GB Traffic\n- 30 Days\n- Price: ${}',
+        'ultimate_plan': '💎 Ultimate Plan\n- 200GB Traffic\n- 30 Days\n- Price: ${}',
+        'select_payment': 'Select your preferred payment method:',
+        'crypto_pay': '💎 Pay with Crypto',
+        'purchase_success': 'Payment successful! Your configuration will be generated shortly.',
+        'purchase_error': 'Error processing payment. Please try again.',
+        'download_title': '📱 Download VPN Clients',
+        'android_client': '📱 Android Client',
+        'ios_client': '📱 iOS Client',
+        'windows_client': '🖥️ Windows Client',
+        'macos_client': '🖥️ macOS Client',
+        'linux_client': '🖥️ Linux Client'
+    },
+    'fa': {
+        'view_config': '📱 مشاهده پیکربندی',
+        'view_plans': '💰 مشاهده پلن‌ها',
+        'downloads': '⬇️ دانلود',
+        'support': '❓ پشتیبانی/راهنما',
+        'select_language': 'لطفا زبان مورد نظر خود را انتخاب کنید:',
+        'language_set': 'زبان به فارسی تغییر کرد',
+        'welcome': 'به سرویس VPN ما خوش آمدید! لطفا یک گزینه را انتخاب کنید:',
+        'config_not_found': 'پیکربندی یافت نشد. لطفا ابتدا یک پلن خریداری کنید.',
+        'active_configs': '**پیکربندی‌های فعال شما:**\n',
+        'expired_configs': '\n**پیکربندی‌های منقضی شده:**\n',
+        'config_details': 'نام کاربری: {}\nپلن: {}\nترافیک: {:.2f}GB/{:.2f}GB\nانقضا در: {} روز\n',
+        'basic_plan': '🚀 پلن پایه\n- ترافیک 30 گیگابایت\n- 30 روز\n- قیمت: ${} دلار',
+        'premium_plan': '⚡️ پلن ویژه\n- ترافیک 100 گیگابایت\n- 30 روز\n- قیمت: ${} دلار',
+        'ultimate_plan': '💎 پلن نامحدود\n- ترافیک 200 گیگابایت\n- 30 روز\n- قیمت: ${} دلار',
+        'select_payment': 'روش پرداخت را انتخاب کنید:',
+        'crypto_pay': '💎 پرداخت با ارز دیجیتال',
+        'purchase_success': 'پرداخت موفق! پیکربندی شما به زودی ایجاد خواهد شد.',
+        'purchase_error': 'خطا در پردازش پرداخت. لطفا دوباره تلاش کنید.',
+        'download_title': '📱 دانلود کلاینت‌های VPN',
+        'android_client': '📱 کلاینت اندروید',
+        'ios_client': '📱 کلاینت iOS',
+        'windows_client': '🖥️ کلاینت ویندوز',
+        'macos_client': '🖥️ کلاینت macOS',
+        'linux_client': '🖥️ کلاینت لینوکس'
+    },
+    'ru': {
+        'view_config': '📱 Просмотр конфигурации',
+        'view_plans': '💰 Доступные планы',
+        'downloads': '⬇️ Загрузки',
+        'support': '❓ Поддержка/Помощь',
+        'select_language': 'Пожалуйста, выберите язык:',
+        'language_set': 'Язык изменен на русский',
+        'welcome': 'Добро пожаловать в наш VPN сервис! Выберите опцию:',
+        'config_not_found': 'Конфигурации не найдены. Сначала купите план.',
+        'active_configs': '**Ваши активные конфигурации:**\n',
+        'expired_configs': '\n**Истекшие конфигурации:**\n',
+        'config_details': 'Имя пользователя: {}\nПлан: {}\nТрафик: {:.2f}GB/{:.2f}GB\nИстекает через: {} дней\n',
+        'basic_plan': '🚀 Базовый план\n- 30ГБ трафика\n- 30 дней\n- Цена: ${}',
+        'premium_plan': '⚡️ Премиум план\n- 100ГБ трафика\n- 30 дней\n- Цена: ${}',
+        'ultimate_plan': '💎 Максимальный план\n- 200ГБ трафика\n- 30 дней\n- Цена: ${}',
+        'select_payment': 'Выберите способ оплаты:',
+        'crypto_pay': '💎 Оплата криптовалютой',
+        'purchase_success': 'Оплата успешна! Ваша конфигурация будет создана.',
+        'purchase_error': 'Ошибка при обработке платежа. Попробуйте снова.',
+        'download_title': '📱 Скачать VPN клиенты',
+        'android_client': '📱 Android клиент',
+        'ios_client': '📱 iOS клиент',
+        'windows_client': '🖥️ Windows клиент',
+        'macos_client': '🖥️ macOS клиент',
+        'linux_client': '🖥️ Linux клиент'
+    },
+    'zh': {
+        'view_config': '📱 查看配置',
+        'view_plans': '💰 查看套餐',
+        'downloads': '⬇️ 下载',
+        'support': '❓ 支持/帮助',
+        'select_language': '请选择您的语言：',
+        'language_set': '语言已设置为中文',
+        'welcome': '欢迎使用我们的VPN服务！请选择：',
+        'config_not_found': '未找到配置。请先购买套餐。',
+        'active_configs': '**您的活动配置：**\n',
+        'expired_configs': '\n**已过期配置：**\n',
+        'config_details': '用户名：{}\n套餐：{}\n流量：{:.2f}GB/{:.2f}GB\n剩余天数：{} 天\n',
+        'basic_plan': '🚀 基础套餐\n- 30GB流量\n- 30天\n- 价格：${}',
+        'premium_plan': '⚡️ 高级套餐\n- 100GB流量\n- 30天\n- 价格：${}',
+        'ultimate_plan': '💎 至尊套餐\n- 200GB流量\n- 30天\n- 价格：${}',
+        'select_payment': '选择支付方式：',
+        'crypto_pay': '💎 加密货币支付',
+        'purchase_success': '支付成功！您的配置将很快生成。',
+        'purchase_error': '支付处理错误。请重试。',
+        'download_title': '📱 下载VPN客户端',
+        'android_client': '📱 安卓客户端',
+        'ios_client': '📱 iOS客户端',
+        'windows_client': '🖥️ Windows客户端',
+        'macos_client': '🖥️ macOS客户端',
+        'linux_client': '🖥️ Linux客户端'
+    },
+    'tk': {
+        'view_config': '📱 Sazlamalary görmek',
+        'view_plans': '💰 Meýilnamalary görmek',
+        'downloads': '⬇️ Ýüklemek',
+        'support': '❓ Goldaw/Kömek',
+        'select_language': 'Diliňizi saýlaň:',
+        'language_set': 'Dil türkmençä üýtgedildi',
+        'welcome': 'VPN hyzmatymyza hoş geldiňiz! Opsiýany saýlaň:',
+        'config_not_found': 'Sazlama tapylmady. Ilki meýilnama satyn alyň.',
+        'active_configs': '**Siziň işjeň sazlamalaryňyz:**\n',
+        'expired_configs': '\n**Möhleti geçen sazlamalar:**\n',
+        'config_details': 'Ulanyjy ady: {}\nMeýilnama: {}\nTrafik: {:.2f}GB/{:.2f}GB\nGalan gün: {} gün\n',
+        'basic_plan': '🚀 Esas Meýilnama\n- 30GB trafik\n- 30 gün\n- Bahasy: ${}',
+        'premium_plan': '⚡️ Premium Meýilnama\n- 100GB trafik\n- 30 gün\n- Bahasy: ${}',
+        'ultimate_plan': '💎 Ultimate Meýilnama\n- 200GB trafik\n- 30 gün\n- Bahasy: ${}',
+        'select_payment': 'Töleg usulyny saýlaň:',
+        'crypto_pay': '💎 Kripto bilen tölemek',
+        'purchase_success': 'Töleg üstünlikli! Sazlamalaryňyz basym dörediler.',
+        'purchase_error': 'Tölegi amala aşyrmakda ýalňyşlyk. Gaýtadan synanyşyň.',
+        'download_title': '📱 VPN müşderilerini ýükläň',
+        'android_client': '📱 Android müşderi',
+        'ios_client': '📱 iOS müşderi',
+        'windows_client': '🖥️ Windows müşderi',
+        'macos_client': '🖥️ macOS müşderi',
+        'linux_client': '🖥️ Linux müşderi'
+    },
+    'ar': {
+        'view_config': '📱 عرض الإعدادات',
+        'view_plans': '💰 عرض الباقات',
+        'downloads': '⬇️ التحميلات',
+        'support': '❓ الدعم/المساعدة',
+        'select_language': 'الرجاء اختيار لغتك:',
+        'language_set': 'تم تغيير اللغة إلى العربية',
+        'welcome': 'مرحباً بك في خدمة VPN! الرجاء اختيار خيار:',
+        'config_not_found': 'لم يتم العثور على إعدادات. يرجى شراء باقة أولاً.',
+        'active_configs': '**إعداداتك النشطة:**\n',
+        'expired_configs': '\n**الإعدادات المنتهية:**\n',
+        'config_details': 'اسم المستخدم: {}\nالباقة: {}\nالبيانات: {:.2f}GB/{:.2f}GB\nتنتهي في: {} يوم\n',
+        'basic_plan': '🚀 الباقة الأساسية\n- 30GB بيانات\n- 30 يوم\n- السعر: ${}',
+        'premium_plan': '⚡️ الباقة المميزة\n- 100GB بيانات\n- 30 يوم\n- السعر: ${}',
+        'ultimate_plan': '💎 الباقة الكاملة\n- 200GB بيانات\n- 30 يوم\n- السعر: ${}',
+        'select_payment': 'اختر طريقة الدفع:',
+        'crypto_pay': '💎 الدفع بالعملات المشفرة',
+        'purchase_success': 'تم الدفع بنجاح! سيتم إنشاء الإعدادات قريباً.',
+        'purchase_error': 'خطأ في معالجة الدفع. يرجى المحاولة مرة أخرى.',
+        'download_title': '📱 تحميل تطبيقات VPN',
+        'android_client': '📱 تطبيق Android',
+        'ios_client': '📱 تطبيق iOS',
+        'windows_client': '🖥️ تطبيق Windows',
+        'macos_client': '🖥️ تطبيق macOS',
+        'linux_client': '🖥️ تطبيق Linux'
+    }
+}
+
+def get_user_language(user_id):
+    """Get user's preferred language."""
+    return user_languages.get(str(user_id), 'en')
+
+def get_text(user_id, key):
+    """Get translated text for a specific key."""
+    lang = get_user_language(user_id)
+    return TRANSLATIONS[lang].get(key, TRANSLATIONS['en'][key])
+
+def create_language_markup():
+    """Create language selection markup."""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row('English 🇬🇧', 'فارسی 🇮🇷')
+    markup.row('Русский 🇷🇺', '中文 🇨🇳')
+    markup.row('Türkmençe 🇹🇲', 'العربية 🇸🇦')
+    return markup
+
+def create_client_markup(user_id):
+    """Create client menu markup with translated buttons."""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row(get_text(user_id, 'view_config'), get_text(user_id, 'view_plans'))
+    markup.row(get_text(user_id, 'downloads'), get_text(user_id, 'support'))
+    return markup
 
 #######################
 # Utility Functions  #
@@ -105,13 +293,6 @@ def create_main_markup():
     markup.row('📢 Broadcast Message', '📝 Edit Help')
     markup.row('⚙️ Payment Settings', '💰 Edit Plans')
     markup.row('🔍 Toggle Diagnose Mode')
-    return markup
-
-def create_client_markup():
-    """Create the client menu markup."""
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row('📱 View My Config', '💰 View Available Plans')
-    markup.row('⬇️ Downloads', '❓ Support/Help')
     return markup
 
 #######################
@@ -369,8 +550,42 @@ def send_welcome(message):
         markup = create_main_markup()
         bot.reply_to(message, "Welcome, Admin! Please select an option:", reply_markup=markup)
     else:
-        markup = create_client_markup()
-        bot.reply_to(message, "Welcome! Please select an option:", reply_markup=markup)
+        markup = create_language_markup()
+        bot.reply_to(message, "Please select your language / لطفا زبان خود را انتخاب کنید / Выберите ваш язык / 请选择语言 / Diliňizi saýlaň / الرجاء اختيار لغتك", reply_markup=markup)
+
+@bot.message_handler(func=lambda message: message.text in ['English 🇬🇧', 'فارسی 🇮🇷', 'Русский 🇷🇺', '中文 🇨🇳', 'Türkmençe 🇹🇲', 'العربية 🇸🇦'])
+def handle_language_selection(message):
+    """Handle language selection."""
+    lang_map = {
+        'English 🇬🇧': 'en',
+        'فارسی 🇮🇷': 'fa',
+        'Русский 🇷🇺': 'ru',
+        '中文 🇨🇳': 'zh',
+        'Türkmençe 🇹🇲': 'tk',
+        'العربية 🇸🇦': 'ar'
+    }
+    
+    user_id = str(message.from_user.id)
+    selected_lang = lang_map[message.text]
+    user_languages[user_id] = selected_lang
+    
+    markup = create_client_markup(user_id)
+    bot.reply_to(message, get_text(user_id, 'welcome'), reply_markup=markup)
+
+@bot.message_handler(func=lambda message: not is_admin(message.from_user.id))
+def handle_client_messages(message):
+    """Handle all client-side messages."""
+    user_id = str(message.from_user.id)
+    text = message.text
+    
+    if text == get_text(user_id, 'view_config'):
+        view_my_config(message)
+    elif text == get_text(user_id, 'view_plans'):
+        view_available_plans(message)
+    elif text == get_text(user_id, 'downloads'):
+        show_downloads(message)
+    elif text == get_text(user_id, 'support'):
+        support_help(message)
 
 @bot.message_handler(func=lambda message: is_admin(message.from_user.id) and message.text == '➕ Add User')
 def add_user(message):
@@ -718,18 +933,18 @@ def handle_inline_query(query):
 
     bot.answer_inline_query(query.id, results, cache_time=0)
 
-@bot.message_handler(func=lambda message: message.text == '⬇️ Downloads')
+@bot.message_handler(func=lambda message: message.text == get_text(message.from_user.id, 'downloads'))
 def show_downloads(message):
     """Handle downloads command."""
     markup = types.InlineKeyboardMarkup()
     
     # Android buttons
     android_play = types.InlineKeyboardButton(
-        "📱 Android (PlayStore)", 
+        get_text(message.from_user.id, 'android_client'), 
         url="https://play.google.com/store/apps/details?id=app.hiddify.com&hl=en"
     )
     android_github = types.InlineKeyboardButton(
-        "📱 Android (Github)", 
+        get_text(message.from_user.id, 'android_client'), 
         url="https://github.com/hiddify/hiddify-next/releases/download/v2.0.5/Hiddify-Android-arm64.apk"
     )
     markup.row(android_play)
@@ -737,29 +952,28 @@ def show_downloads(message):
     
     # iOS button
     ios = types.InlineKeyboardButton(
-        "🍎 iOS (AppStore)", 
+        get_text(message.from_user.id, 'ios_client'), 
         url="https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532"
     )
     markup.row(ios)
     
     # Windows button
     windows = types.InlineKeyboardButton(
-        "💻 Windows (Github)", 
+        get_text(message.from_user.id, 'windows_client'), 
         url="https://github.com/hiddify/hiddify-next/releases/download/v2.0.5/Hiddify-Windows-Setup-x64.exe"
     )
     markup.row(windows)
     
     # Other platforms button
     other_platforms = types.InlineKeyboardButton(
-        "🌐 Other platforms (Github)", 
+        get_text(message.from_user.id, 'linux_client'), 
         url="https://github.com/hiddify/hiddify-app/releases/tag/v2.0.5"
     )
     markup.row(other_platforms)
     
     bot.send_message(
         message.chat.id,
-        "📶 *Download Hiddify Client*\n\n"
-        "Please select your platform to download the Hiddify client for your VPN connection:",
+        get_text(message.from_user.id, 'download_title'),
         parse_mode="Markdown",
         reply_markup=markup
     )
@@ -876,7 +1090,7 @@ def process_edit_help_message(message):
     save_help_message(message.text)
     bot.reply_to(message, "✅ Help message updated successfully!")
 
-@bot.message_handler(func=lambda message: message.text == '❓ Support/Help')
+@bot.message_handler(func=lambda message: message.text == get_text(message.from_user.id, 'support'))
 def support_help(message):
     """Handle support/help command."""
     help_text = load_help_message()
@@ -945,14 +1159,14 @@ def server_info(message):
     bot.send_chat_action(message.chat.id, 'typing')
     bot.reply_to(message, result)
 
-@bot.message_handler(func=lambda message: message.text == '📱 View My Config')
+@bot.message_handler(func=lambda message: message.text == get_text(message.from_user.id, 'view_config'))
 def view_my_config(message):
     """Handle view my config command."""
     user_id = str(message.from_user.id)
     user_data = load_user_data()
 
     if user_id not in user_data:
-        bot.reply_to(message, "You don't have any active configuration. Please purchase a plan first.")
+        bot.reply_to(message, get_text(user_id, 'config_not_found'))
         return
 
     user_configs = user_data[user_id]
@@ -962,7 +1176,7 @@ def view_my_config(message):
         save_user_data(user_data)
 
     # Send a processing message
-    bot.reply_to(message, "Fetching your configurations, please wait...")
+    bot.reply_to(message, get_text(user_id, 'active_configs'))
 
     # Process each config one by one
     for config in user_configs:
@@ -1035,28 +1249,28 @@ def view_my_config(message):
             print(f"Error sending config {username}: {str(e)}")
             continue
 
-@bot.message_handler(func=lambda message: message.text == '💰 View Available Plans')
+@bot.message_handler(func=lambda message: message.text == get_text(message.from_user.id, 'view_plans'))
 def view_available_plans(message):
     """Handle view available plans command."""
     settings = load_payment_settings()
     plans = [
-        f"🚀 Basic Plan\n- 30GB Traffic\n- 30 Days\n- Price: ${settings['prices']['basic']}",
-        f"⭐ Premium Plan\n- 60GB Traffic\n- 30 Days\n- Price: ${settings['prices']['premium']}",
-        f"💎 Ultimate Plan\n- 100GB Traffic\n- 30 Days\n- Price: ${settings['prices']['ultimate']}"
+        f"{get_text(message.from_user.id, 'basic_plan')}\n- {get_text(message.from_user.id, 'basic_plan').split('-')[1]} - Price: ${settings['prices']['basic']}",
+        f"{get_text(message.from_user.id, 'premium_plan')}\n- {get_text(message.from_user.id, 'premium_plan').split('-')[1]} - Price: ${settings['prices']['premium']}",
+        f"{get_text(message.from_user.id, 'ultimate_plan')}\n- {get_text(message.from_user.id, 'ultimate_plan').split('-')[1]} - Price: ${settings['prices']['ultimate']}"
     ]
     
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
         types.InlineKeyboardButton(
-            f"Purchase Basic Plan (30GB) - ${settings['prices']['basic']}", 
+            f"{get_text(message.from_user.id, 'basic_plan')}\n- {get_text(message.from_user.id, 'basic_plan').split('-')[1]} - Price: ${settings['prices']['basic']}", 
             callback_data="purchase_plan:basic:30"
         ),
         types.InlineKeyboardButton(
-            f"Purchase Premium Plan (60GB) - ${settings['prices']['premium']}", 
+            f"{get_text(message.from_user.id, 'premium_plan')}\n- {get_text(message.from_user.id, 'premium_plan').split('-')[1]} - Price: ${settings['prices']['premium']}", 
             callback_data="purchase_plan:premium:60"
         ),
         types.InlineKeyboardButton(
-            f"Purchase Ultimate Plan (100GB) - ${settings['prices']['ultimate']}", 
+            f"{get_text(message.from_user.id, 'ultimate_plan')}\n- {get_text(message.from_user.id, 'ultimate_plan').split('-')[1]} - Price: ${settings['prices']['ultimate']}", 
             callback_data="purchase_plan:ultimate:100"
         )
     )
